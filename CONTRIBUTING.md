@@ -76,7 +76,7 @@ They are not marked `skip` on purpose: the first two may reveal a real defect of
 - TypeScript run directly by Node (type stripping), ES modules, no build step except the Worker bundle and the demo.
 - Validate at the boundary with the Zod schemas of `packages/contract`. Keep business rules in the service commands, not in callers.
 - Every D1 mutation writes its change-log entry in the same batch, and expresses its own preconditions in each statement.
-- The UI, the code messages, the code comments, the CLI verbs and options of `tools/local/` and the test names are in French for now; documentation is in English. Keep new code consistent with its surroundings.
+- The UI, the code messages, the code comments, the CLI verbs and options of `tools/local/` and the test names are in French for now; documentation is in English. Keep new code consistent with its surroundings. Exception: the options of `npm run serve`, its ready line and `host.json` form a public contract for host launchers and stay in English.
 - Tests drive the real Worker under Miniflare and the real demo in Chromium. Do not mock the service.
 - Architecture decisions live in `docs/adr/`. Add one when you change a contract.
 

@@ -124,7 +124,7 @@ npm --prefix "$SOCRATE_DIR" run serve -- --origin http://127.0.0.1:5173 --manife
 | `--port` | `8787` (`SOCRATE_SERVICE_PORT`) | Port of the service; `0` takes a free one. |
 | `--project`, `--issuer` | `local`, `local-backend` | Project id and assertion issuer. |
 | `--state` | `.local/runtime/serve` of the clone | Storage, keys and host file. It must stay inside the clone; a relative path is resolved from the directory you call it from. |
-| `--deployment`, `--commit` | derived from the manifest, `0000000` | Deployment id and commit recorded with it. |
+| `--deployment`, `--commit` | derived from the origin, the commit and the manifest; `0000000` | Deployment id and commit recorded with it. Leave `--deployment` unset: the same id with another origin or manifest is refused with `409 immutable_deployment`. |
 
 When the service is ready, it writes `<state>/host.json` (mode `0600`) and prints one JSON line on standard output, `{"event":"ready","hostConfig":"<path of host.json>","serviceUrl":"…"}`; logs go to standard error. `host.json` holds everything your app needs:
 
@@ -144,7 +144,7 @@ When the service is ready, it writes `<state>/host.json` (mode `0600`) and print
 
 Give `serviceUrl`, `projectId`, `reviewKey` and `deploymentId` to the client as `preview`, and let your local backend sign assertions (step 1) with the private JWK at `privateKeyPath`, using `issuer`, `audience` and `origin` from the same file. This key is a local test key: never reuse it for a deployed instance. Only that origin gets sessions, so serve your app on exactly the same scheme, host and port.
 
-Ctrl+C or `SIGTERM` stops the service; the command exits with code `0` once the closure is confirmed. A host launcher that runs the whole stack waits for the ready line, reads `host.json`, and sends `SIGTERM` when it stops. The command refuses to start if another one owns the same `--state`, if the port is taken, or if the previous run did not confirm its closure (a crash or `SIGKILL`). In that last case, check that no service of that state is still running, then delete `<state>.owner.json` as the message says.
+Ctrl+C or `SIGTERM` stops the service and deletes `host.json`; the command exits with code `0` once the closure is confirmed. A host launcher that runs the whole stack waits for the ready line, reads `host.json`, and sends `SIGTERM` when it stops. The command refuses to start if another one owns the same `--state`, if the port is taken, or if the previous run did not confirm its closure (a crash or `SIGKILL`). In that last case, check that no service of that state is still running, then delete `<state>.owner.json` as the message says.
 
 ## The `.socrate/` manifest
 

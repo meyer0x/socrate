@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { join, relative } from 'node:path';
+import { assembleManifest } from '@socrate/contract/assemble';
 import { signAssertion } from '../assertion.ts';
 import { REPO_ROOT, allowPort, deadlineIn, localFetch, localPath } from '../local-run.ts';
 
@@ -101,6 +103,7 @@ test('serve annonce host.json quand le service est prêt ; la clé de l’émett
     served.child.kill('SIGTERM');
     assert.equal(await served.exit, 0);
     assert.match(served.stderr(), /fermeture confirmée/);
+    assert.ok(!existsSync(ready.hostConfig), 'host.json supprimé à la fermeture confirmée');
     return { host, privateJwk: await readFile(host.privateKeyPath, 'utf8') };
   });
   const record = JSON.parse(await readFile(`${state}.owner.json`, 'utf8'));
@@ -124,7 +127,27 @@ test('serve annonce host.json quand le service est prêt ; la clé de l’émett
   });
 });
 
-test('serve refuse sans rien lancer : origine avec chemin, état hors du clone, manifeste invalide, fermeture précédente non confirmée', async () => {
+test('serve accepte un manifeste assemblé en fichier JSON, et la même racine relancée pour une autre origine ouvre un autre déploiement', async () => {
+  const state = await tmp('serve-origines-');
+  const assembled = await assembleManifest(DEMO_MANIFEST);
+  assert.ok(assembled.ok);
+  const manifestFile = join(await tmp('serve-json-'), 'manifest.json');
+  await writeFile(manifestFile, JSON.stringify(assembled.manifest));
+  const deployments: string[] = [];
+  for (const origin of [ORIGIN, 'http://127.0.0.1:5358']) {
+    await withServe(['--origin', origin, '--manifest', manifestFile, '--state', state], async (served) => {
+      const host = JSON.parse(await readFile((await served.ready).hostConfig, 'utf8')) as HostConfig;
+      assert.equal(host.origin, origin);
+      assert.equal(host.reviewKey, 'rappels-automatiques');
+      deployments.push(host.deploymentId);
+      served.child.kill('SIGTERM');
+      assert.equal(await served.exit, 0, served.stderr());
+    });
+  }
+  assert.notEqual(deployments[0], deployments[1], 'l’identifiant dépend de l’origine : pas de 409 immutable_deployment');
+});
+
+test('serve refuse sans rien lancer : origine avec chemin, état hors du clone, manifeste invalide, port occupé, fermeture précédente non confirmée', async () => {
   const state = await tmp('serve-refus-');
   const refused = async (args: string[], reason: RegExp) => withServe(args, async (served) => {
     assert.equal(await served.exit, 1);
@@ -137,6 +160,16 @@ test('serve refuse sans rien lancer : origine avec chemin, état hors du clone, 
   await writeFile(join(invalid, 'index.json'), JSON.stringify({ schemaVersion: 1, reviewKey: 'essai', before: 'a', now: 'b', zones: [] }));
   await refused(['--origin', ORIGIN, '--manifest', relative(REPO_ROOT, invalid), '--state', state], /refusé \(manifest_invalid\)[\s\S]*title/);
   assert.ok(!existsSync(join(state, 'host.json')) && !existsSync(`${state}.owner.json`), 'aucune racine possédée après un refus d’arguments');
+
+  const taken = createServer();
+  await new Promise<void>((done) => taken.listen(0, '127.0.0.1', done));
+  try {
+    const { port } = taken.address() as { port: number };
+    await refused(['--origin', ORIGIN, '--manifest', DEMO_MANIFEST, '--state', state, '--port', String(port)], new RegExp(`refusé \\(occupied\\) : port ${port} non libre`));
+  } finally {
+    await new Promise((done) => taken.close(done));
+  }
+  assert.ok(!existsSync(join(state, 'host.json')) && !existsSync(`${state}.owner.json`), 'aucun service lancé sur un port occupé');
 
   await writeFile(`${state}.owner.json`, JSON.stringify({ generation: 'ancienne', pid: 1, startedAt: '2026-10-22T00:00:00Z', state: 'ready', ports: { service: 1, demo: 2 }, resources: { service: { phase: 'running', port: 1 } } }));
   await refused(['--origin', ORIGIN, '--manifest', DEMO_MANIFEST, '--state', state], /refusé \(uncertain_resources\)[\s\S]*service en phase running/);

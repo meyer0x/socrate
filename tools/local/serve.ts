@@ -4,7 +4,7 @@ import { deadlineIn, guardedPath, localFetch, localPath, portNumber, tcpProbe, L
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { assembleManifest } from '@socrate/contract/assemble';
 import { issuesOf, manifestSchema, type Manifest } from '@socrate/contract';
@@ -86,6 +86,7 @@ async function main(): Promise<number> {
     generation: crypto.randomUUID(), pid: process.pid, startedAt: new Date().toISOString(), state: 'starting',
     ports: { service: port, demo: Number(new URL(origin).port || (origin.startsWith('https:') ? 443 : 80)) }, resources: {},
   };
+  const hostConfig = join(root, 'host.json');
   let close: (() => Promise<void>) | undefined;
   let stopping: Promise<boolean> | null = null;
   const cancel = new AbortController();
@@ -102,6 +103,13 @@ async function main(): Promise<number> {
     } catch (e) {
       ok = false;
       log(`service non arrêté : ${(e as Error).message}`);
+    }
+    // Un host.json sans service derrière laisserait un lanceur signer pour une instance arrêtée.
+    if (ok) {
+      await rm(hostConfig, { force: true }).catch((e: Error) => {
+        ok = false;
+        log(`${hostConfig} non supprimé : ${e.message}`);
+      });
     }
     record.state = ok ? 'closed' : 'failed';
     await rt.publishRecord(root, record).catch((e: Error) => {
@@ -145,7 +153,6 @@ async function main(): Promise<number> {
     });
     if (imported.status !== 200 && imported.status !== 201) throw new Error(`import refusé : ${imported.status} ${imported.text}`);
     log(`service ${service.url} (instance ${service.instanceId}), déploiement ${deploymentId} de la revue ${manifest.reviewKey} pour ${origin}`);
-    const hostConfig = join(root, 'host.json');
     await rt.writePrivateFile(hostConfig, `${JSON.stringify({
       serviceUrl: service.url, instanceId: service.instanceId, projectId, reviewKey: manifest.reviewKey, deploymentId,
       issuer, audience: rt.SERVICE_AUDIENCE, origin, privateKeyPath: keyPath,
