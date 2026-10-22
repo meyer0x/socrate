@@ -43,7 +43,7 @@ Default ports, all on `127.0.0.1`, changeable through environment variables when
 
 | Variable | Default | Used by |
 | --- | --- | --- |
-| `SOCRATE_SERVICE_PORT`, `SOCRATE_DEMO_PORT` | 8787, 5173 | `npm run demo`, `npm run parcours-local` |
+| `SOCRATE_SERVICE_PORT`, `SOCRATE_DEMO_PORT` | 8787, 5173 | `npm run demo`, `npm run parcours-local`; `SOCRATE_SERVICE_PORT` also for `npm run serve` |
 | `SOCRATE_STORAGE_TEST_PORT` | 5389 | `test:contract` |
 | `SOCRATE_BROWSER_TEST_PORT` | 5199 | `test:browser` |
 | `SOCRATE_COMMENTAIRES_PORT` | 5299 | `test:browser` |
