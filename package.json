@@ -24,7 +24,7 @@
     "nettoyer-captures": "node tools/local/nettoyer-captures.ts",
     "sauvegarde": "node tools/local/sauvegarde.ts",
     "parcours-local": "node tools/local/parcours-local.ts",
-    "test:browser": "node --test --test-concurrency=1 tools/local/browser-tests.ts tools/local/commentaires-tests.ts tools/local/mount-tests.ts",
+    "test:browser": "node --test --test-concurrency=1 tools/local/browser-tests.ts tools/local/commentaires-tests.ts tools/local/mount-tests.ts packages/socrate/test/react.browser.ts",
     "verify": "npm run typecheck && npm run test:contract && npm run test:browser",
     "measure:demo": "node tools/local/measure-demo.ts",
     "distant": "node tools/local/distant.ts",

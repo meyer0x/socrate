@@ -1,6 +1,7 @@
 #!/bin/sh
 # Contrôle du tarball hors workspace : paquet installé dans une app Vite + React 19 neuve sous .tmp/, typage, build de production
-# (check-absent doit passer) et build de preview (check-absent doit échouer, CSP complétée). Seules les dépendances de l'app viennent du registre npm.
+# (check-absent doit passer) et build de preview (check-absent doit échouer, CSP complétée, deux marqueurs dans le bundle minifié). Seules les dépendances
+# de l'app viennent du registre npm.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 unset NODE_OPTIONS
@@ -11,10 +12,13 @@ APP=$(mktemp -d "$ROOT/.tmp/consumer-XXXXXX")
 SERVICE=https://my-socrate.example.workers.dev
 echo "== app: $APP"
 
-(cd "$ROOT" && npm pack --silent --workspace packages/socrate --pack-destination "$APP" >/dev/null)
+(cd "$ROOT" && npm run --silent build -w @meyer0x/socrate >/dev/null && npm pack --silent packages/socrate/pack --pack-destination "$APP" >/dev/null)
 TARBALL=$(ls "$APP"/meyer0x-socrate-*.tgz)
 echo "== tarball: $(basename "$TARBALL")"
 tar -tzf "$TARBALL" | sort
+echo "== published package.json"
+tar -xOzf "$TARBALL" package/package.json | tee "$APP/published.json"
+node -e 'const p = require(process.argv[1]); const bad = ["private", "scripts", "devDependencies"].filter((k) => k in p); if (bad.length || /\.\.\/|@socrate\//.test(JSON.stringify(p))) { console.error("published package.json keeps", bad.join(", ") || "a workspace reference"); process.exit(1); }' "$APP/published.json"
 
 mkdir -p "$APP/src" "$APP/public"
 cd "$APP"
@@ -101,5 +105,7 @@ SOCRATE_PREVIEW='{"serviceUrl":"'$SERVICE'","projectId":"my-app","reviewKey":"pr
 ls dist/assets
 if npx socrate check-absent dist; then echo "check-absent passed on a preview build"; exit 1; fi
 cat dist/_headers
-grep -q "connect-src 'self' $SERVICE" dist/_headers
+test "$(grep Content-Security-Policy dist/_headers)" = "  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; connect-src 'self' $SERVICE; media-src 'self' blob:"
+grep -q '@meyer0x/socrate/client' dist/assets/*.js
+grep -q '@meyer0x/socrate/review' dist/assets/*.js
 echo "== consumer check passed: $APP"

@@ -41,13 +41,14 @@ export function envLine(preview: PreviewEnv): string {
 
 export async function prepare(io: Io, args: { origin?: string; config?: string }): Promise<void> {
   if (!args.origin) throw new CliError('usage: socrate preview prepare --origin <origin of the preview> [--config socrate.yml]', 2);
-  const config = loadConfig(io.cwd, args.config);
   const output = need(io.env, 'GITHUB_OUTPUT');
   const disabled = (why: string) => {
     appendFileSync(output, 'enabled=false\n');
     io.log(`Socrate disabled: ${why}`);
   };
+  // Hors pull request, `socrate.yml` n'est pas lu : une branche sans ce fichier, ou qui le casse, garde son build normal.
   if (io.env.GITHUB_EVENT_NAME !== 'pull_request') return disabled(`event ${io.env.GITHUB_EVENT_NAME ?? '(unknown)'} is not pull_request`);
+  const config = loadConfig(io.cwd, args.config);
 
   const event = JSON.parse(readFileSync(need(io.env, 'GITHUB_EVENT_PATH'), 'utf8')) as { pull_request?: { number?: unknown; head?: { sha?: unknown } } };
   const number = event.pull_request?.number;

@@ -48,7 +48,7 @@ test('sans SOCRATE_PREVIEW : import.meta.env.SOCRATE vaut false, la branche Socr
   assert.equal(readFileSync(join(root, 'dist/_headers'), 'utf8'), "/*\n  Content-Security-Policy: default-src 'self'; img-src 'self' data:\n");
 });
 
-test('avec SOCRATE_PREVIEW : contexte défini au build et CSP complétée avec l’origine du service', async () => {
+test('avec SOCRATE_PREVIEW : contexte défini au build et CSP complétée (service sur connect-src, blob: pour les médias)', async () => {
   const root = app();
   await withPreview(JSON.stringify(PREVIEW), () => viteBuild(root));
   const js = bundle(root);
@@ -56,7 +56,7 @@ test('avec SOCRATE_PREVIEW : contexte défini au build et CSP complétée avec l
   for (const value of [SERVICE, PREVIEW.deploymentId, PREVIEW.origin]) assert.ok(js.includes(value), value);
   assert.doesNotMatch(js, /Automatic reminders|0123456789abcdef0123|"pullRequest"|buildId/, 'seuls les cinq champs du client entrent dans le bundle');
   assert.equal(readFileSync(join(root, 'dist/_headers'), 'utf8'),
-    `/*\n  Content-Security-Policy: default-src 'self'; img-src 'self' data: ${SERVICE}; connect-src 'self' ${SERVICE}; media-src 'self' ${SERVICE}\n`);
+    `/*\n  Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; connect-src 'self' ${SERVICE}; media-src 'self' blob:\n`);
 });
 
 test('refus : vite serve, contexte incohérent, fichier de headers absent ou à plusieurs CSP', async () => {

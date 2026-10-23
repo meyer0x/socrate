@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { originAllowed, projectPolicySchema, stableId, zoneSchema } from '@socrate/contract';
+import { english } from './messages.ts';
 
 export const CONFIG_FILE = 'socrate.yml';
 export const DEFAULT_ZONES = [{ id: 'home', title: 'Home', route: '/', questions: [] as string[] }];
@@ -28,6 +29,8 @@ const required = (what: string) => ({ error: (issue: { input: unknown }) => (iss
 const relativePath = (what: string) => z.string(required(what)).min(1, `required: ${what}`)
   .refine((p) => !isAbsolute(p) && !p.split(/[\\/]/).includes('..'), `must be a relative path without "..": ${what}`);
 const allowedOrigin = projectPolicySchema.shape.allowedOrigin.unwrap();
+const manifestText = (what: string) => z.string(required(what)).trim().min(1, 'must not be empty').max(400, 'at most 400 characters')
+  .refine((t) => !/[{}]/.test(t.replaceAll('{pr}', '').replaceAll('{title}', '')), 'only the {pr} and {title} placeholders are supported');
 
 export const configSchema = z.strictObject({
   service: z.string(required('the https origin of your Socrate service, e.g. https://my-socrate.example.workers.dev'))
@@ -43,6 +46,8 @@ export const configSchema = z.strictObject({
       ctx.addIssue({ code: 'custom', message: 'must render a review key of lowercase letters, digits and dashes, at most 64 characters, e.g. pr-{pr}' });
     }
   }),
+  before: manifestText('what reviewers saw before the pull request').default('The app before pull request #{pr}.'),
+  now: manifestText('what the pull request changes').default('Pull request #{pr}: {title}'),
   csp: relativePath('the headers file of the build output, e.g. _headers').optional(),
   zones: z.array(zoneSchema, { error: 'must be a list of zones { id, title, route }' }).min(1, 'at least one zone').max(30, 'at most 30 zones').optional(),
   manifest: relativePath('the .socrate folder of the pull request').optional(),
@@ -56,7 +61,7 @@ export class ConfigError extends Error {}
 const describeIssues = (file: string, error: z.ZodError) => error.issues.flatMap((i) => {
   const at = i.path.map(String).join('.');
   if (i.code === 'unrecognized_keys') return i.keys.map((k) => `  ${[at, k].filter(Boolean).join('.')}: unknown key`);
-  return [`  ${at || '(file)'}: ${i.message}`];
+  return [`  ${at || '(file)'}: ${english(i.message)}`];
 }).join('\n');
 
 export function parseConfig(text: string, file: string): LoadedConfig {

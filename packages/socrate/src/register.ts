@@ -6,6 +6,7 @@ import { assembleManifest } from '@socrate/contract/assemble';
 import { loadConfig, type LoadedConfig } from './config.ts';
 import { PREVIEW_ENV, parsePreview, type PreviewEnv } from './preview.ts';
 import { CliError, type Io } from './io.ts';
+import { describeIssue } from './messages.ts';
 
 export const TOKEN_ENV = 'SOCRATE_IMPORT_TOKEN';
 
@@ -23,15 +24,17 @@ export function truncate(text: string, max: number): string {
 
 function validated(manifest: unknown, what: string): Manifest {
   const r = manifestSchema.safeParse(manifest);
-  if (!r.success) throw new CliError(`${what} refused:\n${issuesOf(r.error).map((i) => `  ${i.path}: ${i.message}`).join('\n')}`);
+  if (!r.success) throw new CliError(`${what} refused:\n${issuesOf(r.error).map(describeIssue).join('\n')}`);
   return r.data;
 }
 
 export function genericManifest(config: LoadedConfig, preview: PreviewEnv): Manifest {
   const n = preview.pullRequest;
+  // Un seul passage : un titre qui contient `{pr}` reste tel quel.
+  const text = (template: string) => truncate(template.replace(/\{(pr|title)\}/g, (_, key) => (key === 'pr' ? String(n) : preview.title.trim())), 400);
   return validated({
     schemaVersion: MANIFEST_SCHEMA_VERSION, reviewKey: preview.reviewKey, ...(preview.repository && { repository: preview.repository }), pullRequest: n,
-    title: truncate(preview.title, 80), before: `The app before pull request #${n}.`, now: truncate(`Pull request #${n}: ${preview.title}`, 400), zones: config.zones,
+    title: truncate(preview.title, 80), before: text(config.before), now: text(config.now), zones: config.zones,
   }, 'generic manifest');
 }
 
@@ -44,7 +47,7 @@ export async function buildManifest(config: LoadedConfig, preview: PreviewEnv, i
     return genericManifest(config, preview);
   }
   const r = await assembleManifest(dir);
-  if (!r.ok) throw new CliError(`${dir} refused:\n${r.issues.map((i) => `  ${i.file ?? '(manifest)'} ${i.path}: ${i.message}`).join('\n')}`);
+  if (!r.ok) throw new CliError(`${dir} refused:\n${r.issues.map((i) => describeIssue({ ...i, file: i.file ?? '(manifest)' })).join('\n')}`);
   const m = r.manifest;
   return validated({
     ...m, reviewKey: preview.reviewKey, pullRequest: m.pullRequest ?? preview.pullRequest, ...(!m.repository && preview.repository && { repository: preview.repository }),
@@ -86,7 +89,7 @@ export async function register(io: Io, args: { url?: string; config?: string }):
     try {
       body = JSON.parse(text);
     } catch {}
-    const issues = body?.issues?.map((i) => `\n  ${i.file ? `${i.file} ` : ''}${i.path}: ${i.message}`).join('') ?? '';
+    const issues = body?.issues?.map((i) => `\n${describeIssue(i)}`).join('') ?? '';
     throw new CliError(`the Socrate service refused the deployment: ${res.status} ${body?.code ?? ''}${body?.message ? `: ${body.message}` : text ? `: ${text.slice(0, 300)}` : ''}${issues}`);
   }
   io.log(`registered deployment ${preview.deploymentId} of review ${preview.reviewKey} (${res.status}) for ${url.href}`);

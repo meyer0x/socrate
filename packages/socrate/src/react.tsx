@@ -1,6 +1,6 @@
-import { useDebugValue, useMemo } from 'react';
+import { useCallback, useDebugValue, useLayoutEffect, useMemo, useRef } from 'react';
 import { SocrateReview as Review } from '@socrate/react';
-import { CLIENT_MARK } from './mark.ts';
+import { CLIENT_MARK, RENDER_MARK } from './mark.ts';
 
 /** `import.meta.env.SOCRATE` d'un build de preview ; `origin` absent, le composant ne vérifie pas l'origine de la page. */
 export type SocratePreview = { serviceUrl: string; projectId: string; reviewKey: string; deploymentId: string; origin?: string };
@@ -25,10 +25,16 @@ function useTopLevelAt(origin: string | undefined): boolean {
   return !framed && (origin === undefined || origin === window.location.origin);
 }
 
-export function SocrateReview({ preview, ...props }: SocrateReviewProps) {
+export function SocrateReview({ preview, getIdentityAssertion, ...props }: SocrateReviewProps) {
   const { serviceUrl, projectId, reviewKey, deploymentId } = preview;
-  // Le client interne se recrée à chaque nouvel objet `preview` : seule une valeur différente en crée un.
+  // Le client interne se recrée quand `preview` ou la fonction d'assertion change d'identité : seule une valeur différente en crée un.
   const context = useMemo(() => ({ serviceUrl, projectId, reviewKey, deploymentId }), [serviceUrl, projectId, reviewKey, deploymentId]);
+  // Une fonction écrite en ligne chez l'hôte change à chaque rendu : le client appelle toujours la dernière, sans être recréé.
+  const latest = useRef(getIdentityAssertion);
+  useLayoutEffect(() => {
+    latest.current = getIdentityAssertion;
+  });
+  const assertion = useCallback((signal: AbortSignal) => latest.current(signal), []);
   if (!useTopLevelAt(preview.origin)) return null;
-  return <Review {...props} preview={context} />;
+  return <Review key={RENDER_MARK} {...props} preview={context} getIdentityAssertion={assertion} />;
 }

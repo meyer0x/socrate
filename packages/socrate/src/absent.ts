@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { loadConfig } from './config.ts';
-import { CLIENT_MARK } from './mark.ts';
+import { CLIENT_MARK, RENDER_MARK } from './mark.ts';
 import { CliError, type Io } from './io.ts';
 
 export type Leak = { file: string; marker: string };
@@ -35,7 +35,7 @@ export function checkAbsent(io: Io, args: { dist?: string; config?: string }): v
     isDir = statSync(dist).isDirectory();
   } catch {}
   if (!isDir) throw new CliError(`${dist} is not a directory`);
-  const { leaks, checked } = findLeaks(dist, [CLIENT_MARK, new URL(config.service).host]);
+  const { leaks, checked } = findLeaks(dist, [CLIENT_MARK, RENDER_MARK, new URL(config.service).host]);
   if (checked === 0) throw new CliError(`${dist} contains no file to check`);
   if (leaks.length) throw new CliError(`Socrate found in ${dist}:\n${leaks.map((l) => `  ${l.file}: contains ${JSON.stringify(l.marker)}`).join('\n')}`);
   io.log(`no Socrate client nor service address in ${dist} (${checked} files checked)`);

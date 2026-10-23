@@ -94,6 +94,11 @@ test('preview prepare : label lu en direct, contexte écrit dans GITHUB_ENV, sor
     assert.equal(push.code, 0, push.stderr);
     assert.match(push.stdout, /event push is not pull_request/);
     assert.equal(github.calls.length, 2, 'hors pull_request, aucun appel à l’API');
+    const broken = workspace('service: http://not-https.example\n', EVENT);
+    const pushBroken = await cli(['preview', 'prepare', '--origin', ORIGIN], broken.dir, actionsEnv(broken.files, github.url, 'push'));
+    assert.equal(pushBroken.code, 0, `hors pull_request, socrate.yml n’est pas lu : ${pushBroken.stderr}`);
+    assert.equal(readFileSync(broken.files.output, 'utf8'), 'enabled=false\n');
+    assert.match((await cli(['preview', 'prepare', '--origin', ORIGIN], broken.dir, actionsEnv(broken.files, github.url))).stderr, /socrate\.yml is invalid/, 'en pull request, il l’est');
 
     const outside = await cli(['preview', 'prepare', '--origin', 'https://feature-x.other.pages.dev'], dir, env);
     assert.equal(outside.code, 1);
@@ -171,7 +176,12 @@ test('preview register : PUT du déploiement sur un service local réel, manifes
     writeFileSync(join(dir, '.socrate/zones/extra.json'), '{}');
     const invalid = await cli(['preview', 'register', '--url', `${ORIGIN}/`], dir, env('pr-42-0123456789ab-994-1'));
     assert.equal(invalid.code, 1);
-    assert.match(invalid.stderr, /zones\/extra\.json \(fichier\): fichier de données non référencé/);
+    assert.match(invalid.stderr, /zones\/extra\.json \(file\): data file not referenced by index\.json/);
+    writeFileSync(join(dir, '.socrate/index.json'), JSON.stringify({ schemaVersion: 1, reviewKey: 'Reminders', title: '', before: 'b', now: 'n', zones: ['zones/settings.json', '/etc/x.json'], extra: 1 }));
+    const french = await cli(['preview', 'register', '--url', `${ORIGIN}/`], dir, env('pr-42-0123456789ab-994-1'));
+    assert.equal(french.code, 1);
+    assert.match(french.stderr, /index\.json reviewKey: lowercase letters, digits and dashes\n  index\.json title: required text\n  index\.json extra: unknown key/);
+    assert.doesNotMatch(french.stderr, /[àâçéèêëîïôûùü’]|fichier|racine/, 'aucun message du contrat laissé en français');
   } finally {
     await service.stop();
   }
@@ -189,6 +199,10 @@ test('check-absent : passe sur un build sans Socrate, échoue sur le marqueur du
   const leaked = await cli(['check-absent', 'dist'], dir, {});
   assert.equal(leaked.code, 1);
   assert.match(leaked.stderr, /Socrate found in .*dist:\n {2}assets\/app\.js: contains "my-socrate\.example\.workers\.dev"/);
+  writeFileSync(join(dir, 'dist/assets/app.js'), 'jsx(Review, props, "@meyer0x/socrate/review")');
+  const rendered = await cli(['check-absent', 'dist'], dir, {});
+  assert.equal(rendered.code, 1, 'le marqueur porté par le rendu suffit');
+  assert.match(rendered.stderr, /assets\/app\.js: contains "@meyer0x\/socrate\/review"/);
   const missing = await cli(['check-absent', 'build'], dir, {});
   assert.match(missing.stderr, /build is not a directory/);
   assert.equal((await cli(['check-absent'], dir, {})).code, 2);
