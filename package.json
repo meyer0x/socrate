@@ -11,6 +11,7 @@
   "workspaces": [
     "packages/contract",
     "packages/react",
+    "packages/socrate",
     "apps/service",
     "apps/demo",
     "tools/local"
@@ -18,7 +19,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p apps/service/tsconfig.json --noEmit",
     "build:worker": "node tools/local/build-worker.ts",
-    "test:contract": "npm run build:worker && node --test --test-concurrency=1 apps/service/test/*.test.ts packages/contract/test/*.test.ts tools/local/test/*.test.ts",
+    "test:contract": "npm run build:worker && node --test --test-concurrency=1 apps/service/test/*.test.ts packages/contract/test/*.test.ts tools/local/test/*.test.ts packages/socrate/test/*.test.ts",
     "demo": "node tools/local/demo.ts",
     "nettoyer-captures": "node tools/local/nettoyer-captures.ts",
     "sauvegarde": "node tools/local/sauvegarde.ts",
