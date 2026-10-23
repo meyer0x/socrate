@@ -39,19 +39,25 @@ The component, behind the build-time flag (`false` in every build except a prepa
 const preview = import.meta.env.SOCRATE;
 const SocrateReview = preview ? lazy(() => import('@meyer0x/socrate/react').then((m) => ({ default: m.SocrateReview }))) : null;
 
+async function getIdentityAssertion(signal: AbortSignal): Promise<string> {
+  const res = await fetch('/api/socrate/assertion', { method: 'POST', signal });
+  if (!res.ok) throw new Error('identity assertion refused');
+  return (await res.json()).assertion;
+}
+
 {preview && SocrateReview && user && (
   <Suspense fallback={null}>
     <SocrateReview
       key={`${user.id}:${user.exploring?.account ?? ''}`}
       preview={preview}
-      getIdentityAssertion={async (signal) => (await (await fetch('/api/socrate/assertion', { method: 'POST', signal })).json()).assertion}
+      getIdentityAssertion={getIdentityAssertion}
       navigation={{ current: () => location.pathname, go: (route) => navigate(route) }}
     />
   </Suspense>
 )}
 ```
 
-Two steps in the pull request workflow, around your build and deploy steps (`on: pull_request` with the `labeled` type, `permissions: pull-requests: read`):
+Two steps in the pull request workflow, around your build and deploy steps (`on: pull_request` with the `labeled` and `unlabeled` types, `permissions: pull-requests: read`; if that workflow is a required check, read [Required checks](../packages/socrate/README.md#4-github-actions) first):
 
 ```yaml
       - id: socrate
@@ -66,7 +72,7 @@ Two steps in the pull request workflow, around your build and deploy steps (`on:
           SOCRATE_IMPORT_TOKEN: ${{ secrets.SOCRATE_IMPORT_TOKEN }}
 ```
 
-A pull request gets a Socrate preview when it carries the `socrate` label. Run `npx socrate check-absent dist` after your production build. The backend route `/api/socrate/assertion` is the identity bridge of step 1 below. Every option, the CSP completion and the commands are in the [package README](../packages/socrate/README.md).
+A pull request gets a Socrate preview when it carries the `socrate` label. Run `npx socrate check-absent dist` after your production build. If your preview headers set a Content-Security-Policy, add `csp: _headers` (or your headers file) to `socrate.yml`, and allow `style-src 'unsafe-inline'`. The backend route `/api/socrate/assertion` is the identity bridge of step 1 below. Every option, the CSP completion and the commands are in the [package README](../packages/socrate/README.md).
 
 ## 1. Identity bridge
 
