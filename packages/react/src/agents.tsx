@@ -31,6 +31,10 @@ async function projectCall<T>(client: ReviewClient, path: string, method: 'GET' 
   }
 }
 
+/** Après Autoriser, la commande récupère son jeton à sa prochaine scrutation : la liste est relue jusqu'à le voir, 30 secondes au plus. */
+const AWAIT_EVERY_MS = 2000;
+const AWAIT_FOR_MS = 30_000;
+
 const date = (iso: string) => new Date(iso).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
 const reason = (e: unknown) => (e instanceof SocrateApiError || e instanceof Error ? e.message : 'Erreur inattendue.');
 
@@ -42,7 +46,7 @@ type Step =
   | { kind: 'error'; text: string };
 
 /**
- * « Connecter un agent » : code affiché par `socrate login`, détails relus au service, avertissement, puis décision explicite ; « Mes agents » liste
+ * « Connecter un agent » : code affiché par `npx @meyer0x/socrate login`, détails relus au service, avertissement, puis décision explicite ; « Mes agents » liste
  * et révoque les jetons délégués de la personne connectée. Chargé seulement quand on l'ouvre.
  */
 export function AgentsView({ client, onBack, onClose, headingRef }: { client: ReviewClient; onBack: () => void; onClose: () => void; headingRef: RefObject<HTMLHeadingElement | null> }) {
@@ -50,6 +54,7 @@ export function AgentsView({ client, onBack, onClose, headingRef }: { client: Re
   const [step, setStep] = useState<Step>({ kind: 'idle' });
   const [agents, setAgents] = useState<AgentToken[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  const [awaiting, setAwaiting] = useState<DeviceDetails | null>(null);
   const project = client.preview.projectId;
 
   const reload = useCallback(async () => {
@@ -64,6 +69,30 @@ export function AgentsView({ client, onBack, onClose, headingRef }: { client: Re
     headingRef.current?.focus();
     void reload();
   }, [reload]);
+  useEffect(() => {
+    if (!awaiting) return;
+    let stopped = false;
+    const until = Date.now() + AWAIT_FOR_MS;
+    // Le jeton de cette demande : même agent et même machine, émis après la demande.
+    const arrived = (a: AgentToken) => a.agent === awaiting.agent && a.machine === awaiting.machine && a.createdAt >= awaiting.createdAt;
+    void (async () => {
+      while (!stopped && Date.now() < until) {
+        await new Promise((r) => setTimeout(r, AWAIT_EVERY_MS));
+        if (stopped) return;
+        try {
+          const items = (await projectCall<{ items: AgentToken[] }>(client, '/agents')).items;
+          if (stopped) return;
+          setAgents(items);
+          setListError(null);
+          if (items.some(arrived)) break;
+        } catch (e) {
+          if (!stopped) setListError(reason(e));
+        }
+      }
+      if (!stopped) setAwaiting(null);
+    })();
+    return () => { stopped = true; };
+  }, [awaiting, client]);
 
   const typed = normalizeUserCode(code);
   const lookup = async (e: FormEvent) => {
@@ -82,7 +111,7 @@ export function AgentsView({ client, onBack, onClose, headingRef }: { client: Re
       await projectCall(client, `/devices/${normalizeUserCode(details.userCode)}/${approve ? 'approve' : 'deny'}`, 'POST');
       setCode('');
       setStep({ kind: 'done', text: approve ? `${details.agent} sur ${details.machine} est autorisé. Revenez au terminal : la commande se termine d’elle-même.` : 'Demande refusée. La commande s’arrête sans jeton.' });
-      if (approve) void reload();
+      if (approve) setAwaiting(details);
     } catch (err) {
       setStep({ kind: 'error', text: reason(err) });
     }
@@ -109,7 +138,7 @@ export function AgentsView({ client, onBack, onClose, headingRef }: { client: Re
       <div className="socrate-body">
         <section className="socrate-section" aria-labelledby="socrate-connecter">
           <h2 id="socrate-connecter">Connecter un agent</h2>
-          <p className="socrate-meta">Dans le terminal de votre dépôt, lancez <code>npx socrate login</code>, puis saisissez le code qu’il affiche.</p>
+          <p className="socrate-meta">Dans le terminal de votre dépôt, lancez <code>npx @meyer0x/socrate login</code>, puis saisissez le code qu’il affiche.</p>
           <form className="socrate-actions" onSubmit={lookup}>
             <label htmlFor="socrate-code" className="socrate-visually-hidden">Code affiché par la commande</label>
             <input id="socrate-code" className="socrate-input" value={code} onChange={(e) => { setCode(e.target.value); if (step.kind !== 'busy') setStep({ kind: 'idle' }); }}
@@ -121,9 +150,9 @@ export function AgentsView({ client, onBack, onClose, headingRef }: { client: Re
           {step.kind === 'done' && <p className="socrate-status" data-kind="success" role="status" data-testid="socrate-agent-done">{step.text}</p>}
           {step.kind === 'details' && (
             <div className="socrate-card" data-testid="socrate-device">
-              <p><strong>Autoriser {step.details.agent} sur {step.details.machine} à lire, répondre et résoudre en ton nom sur {project} ?</strong></p>
+              <p><strong>Autoriser {step.details.agent} sur {step.details.machine} à lire, répondre et résoudre en votre nom sur {project} ?</strong></p>
               <p className="socrate-meta">Code {formatUserCode(normalizeUserCode(step.details.userCode))} · demandé le {date(step.details.createdAt)} · valable jusqu’à {date(step.details.expiresAt)}. L’accès dure 30 jours et se révoque ici.</p>
-              <p className="socrate-status" data-kind="error">N’approuve que si tu viens de lancer cette commande.</p>
+              <p className="socrate-status" data-kind="error">N’approuvez que si vous venez de lancer cette commande.</p>
               <div className="socrate-actions">
                 <button type="button" className="socrate-button" onClick={() => void decide(step.details, true)}>Autoriser</button>
                 <button type="button" className="socrate-button secondary" onClick={() => void decide(step.details, false)}>Refuser</button>
@@ -134,7 +163,8 @@ export function AgentsView({ client, onBack, onClose, headingRef }: { client: Re
         <section className="socrate-section" aria-labelledby="socrate-mes-agents">
           <h2 id="socrate-mes-agents">Mes agents</h2>
           {listError && <p className="socrate-status" data-kind="error" role="alert">{listError}</p>}
-          {agents?.length === 0 && <p className="socrate-meta">Aucun agent connecté sur {project}.</p>}
+          {awaiting && <p className="socrate-status" role="status" data-testid="socrate-agent-awaiting">En attente de la commande…</p>}
+          {agents?.length === 0 && !awaiting && <p className="socrate-meta">Aucun agent connecté sur {project}.</p>}
           <ul aria-label="Mes agents">
             {agents?.map((a) => (
               <li key={a.tokenId} className="socrate-agent" data-testid="socrate-agent">
