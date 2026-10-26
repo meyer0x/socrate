@@ -4,7 +4,7 @@ This guide is for the coding agent (Claude Code, Codex…) that works on a pull 
 
 There are two ways in:
 
-- **Delegated login, the main path.** The developer runs `npx socrate login` once and approves a code in a preview where they are signed in. For 30 days, the agent reads every review of the project, replies to threads, resolves and reopens them **in the developer's name**, shown as "Name · via Claude". The [`socrate` CLI](../packages/socrate/README.md#for-coding-agents) wraps everything below.
+- **Delegated login, the main path.** The developer runs `npx @meyer0x/socrate login` once and approves a code in a preview where they are signed in. For 30 days, the agent reads every review of the project, replies to threads, resolves and reopens them **in the developer's name**, shown as "Name · via Claude". The [`socrate` CLI](../packages/socrate/README.md#for-coding-agents) wraps everything below.
 - **Read token, for automation without a person.** A `review.read` bearer issued by the operator reads everything and writes nothing. See [Read token](#read-token-for-automation-without-a-person).
 
 Every `sh` block below marked `<!-- example: … -->` is executed verbatim against a real Worker by `apps/service/test/agent-api.test.ts`. The delegated flow is covered by `apps/service/test/agent-login.test.ts` and `packages/socrate/test/agent-cli.test.ts`.
@@ -14,18 +14,20 @@ Every `sh` block below marked `<!-- example: … -->` is executed verbatim again
 ### With the CLI
 
 ```sh
-npx socrate login --agent Claude      # prints a code such as KPXD-4821, waits for approval
+npx @meyer0x/socrate login --agent Claude      # prints a code such as KPXD-4821, waits for approval
 ```
+
+Run the CLI as `npx @meyer0x/socrate`: the bare name `socrate` on npm belongs to an unrelated package. In a project that lists `@meyer0x/socrate` as a dependency, as in the CI steps of [integrate.md](integrate.md), `npx socrate` runs its local bin.
 
 The developer opens a preview of the project where Socrate is mounted and where they are signed in, chooses **Plus d'options → Connecter un agent** in the Socrate toolbar, enters the code, checks the agent, machine and project shown, and clicks **Autoriser**. The command then stores the token and exits. Then:
 
 ```sh
-socrate threads                                   # open threads of the pull request of the current branch
-socrate thread <id> --captures .socrate-shots     # messages, target, screenshot and attachments
-socrate reply <id> "Fixed in the next commit."
-socrate resolve <id> --message "Shortened the label."   # commit defaults to HEAD
-socrate reopen <id> --message "Regression seen on the preview."
-socrate logout
+npx @meyer0x/socrate threads                                   # open threads of the pull request of the current branch
+npx @meyer0x/socrate thread <id> --captures .socrate-shots     # messages, target, screenshot and attachments
+npx @meyer0x/socrate reply <id> "Fixed in the next commit."
+npx @meyer0x/socrate resolve <id> --message "Shortened the label."   # commit defaults to HEAD
+npx @meyer0x/socrate reopen <id> --message "Regression seen on the preview."
+npx @meyer0x/socrate logout
 ```
 
 `--json` gives a stable JSON output on every command. The CLI reference is in [packages/socrate/README.md](../packages/socrate/README.md#for-coding-agents).
@@ -44,8 +46,8 @@ The CLI follows this protocol; any tool can.
 2. **Approval in the panel**, with a reviewer session (exact `Origin`, as every session request):
    - `GET /v1/projects/{project}/devices/{userCode}` returns `{ userCode, projectId, agent, machine, createdAt, expiresAt }`. Case, dash and spaces of the typed code are ignored.
    - `POST /v1/projects/{project}/devices/{userCode}/approve` or `…/deny` returns `{ state: "approved" | "denied" }`.
-   - Approval is refused with `403` while the session explores a customer account (`exploring`) or lacks `thread.participate`. An expired code gives `410 expired_token`, an already decided one `409 state_conflict`, a code of another project `404 not_found`.
-   - Each lookup of an unknown, malformed or other-project code counts as a failure for the signed-in person on the project; after 5 failures in 10 minutes, every lookup answers `429 rate_limited`, whatever the session.
+   - Approval is refused with `403` while the session explores a customer account (`exploring`) or lacks `thread.participate`. An expired code gives `410 expired_token`, or `404 not_found` once the code is erased; an already decided one `409 state_conflict`, a code of another project `404 not_found`.
+   - Each lookup reserves an attempt before reading the code, atomically, and a found code releases it: each lookup of an unknown, malformed or other-project code counts as a failure for the signed-in person on the project; after 5 failures in 10 minutes, every lookup answers `429 rate_limited`, whatever the session.
    - Approval freezes the real person (`actor`), the agent and the capabilities: `review.read`, `thread.participate`, and `thread.moderate` when the session has it, intersected with the project's `attestableCapabilities`.
 3. **Exchange**, without authentication and without `Origin` header: `POST /v1/auth/device/token` with `{ deviceCode }`, every `interval` seconds.
 
@@ -74,8 +76,8 @@ The CLI follows this protocol; any tool can.
 - **Policy at each use**: capabilities are intersected again with the project's `attestableCapabilities` at every request. If `thread.moderate` is removed, the agent can no longer resolve other people's threads; if `thread.participate` is removed, the token gives nothing, reads included.
 - **Revocation** takes effect at the next request (`401 unauthenticated`):
   - in the panel, **Connecter un agent → Mes agents** lists the agents of the signed-in person on the project (`GET /v1/projects/{project}/agents`: `{ items: [{ tokenId, agent, machine, capabilities, createdAt, lastUsedAt, expiresAt }] }`) and revokes one (`POST /v1/projects/{project}/agents/{tokenId}/revoke`);
-  - the tool revokes its own token with `POST /v1/auth/agent/revoke` (`socrate logout`).
-- **Backup and restore**: delegated tokens, like sessions and read tokens, are not exported; after a restore, every agent runs `socrate login` again.
+  - the tool revokes its own token with `POST /v1/auth/agent/revoke` (`npx @meyer0x/socrate logout`).
+- **Backup and restore**: delegated tokens, like sessions and read tokens, are not exported; after a restore, every agent runs `npx @meyer0x/socrate login` again.
 
 ## Writes with a delegated token
 
@@ -225,7 +227,7 @@ Every error returns `{ code, message, requestId, retryable, issues? }` with `Cac
 
 | Status | Code | Case | Retry |
 |---|---|---|---|
-| 401 | `unauthenticated` | missing, unknown, expired or revoked bearer | no, new token (`socrate login` for a delegated one) |
+| 401 | `unauthenticated` | missing, unknown, expired or revoked bearer | no, new token (`npx @meyer0x/socrate login` for a delegated one) |
 | 403 | `forbidden` | other project, missing capability, any write with `review.read`, a write outside reply/resolve/reopen with a delegated token, `Origin` with a delegated token | no |
 | 404 | `not_found` | unknown review (list and log), thread or capture | no |
 | 410 | `resync_required` | unknown or expired cursor, changed epoch, unscoped `c1` marker | restart the list without a cursor |
