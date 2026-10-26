@@ -25,7 +25,7 @@ export function readTokens(env: Io['env']): StoredToken[] {
   try {
     parsed = fileSchema.parse(JSON.parse(readFileSync(file, 'utf8')));
   } catch {
-    throw new CliError(`${file} is not a Socrate credentials file: remove it, then run socrate login again`);
+    throw new CliError(`${file} is not a Socrate credentials file: remove it, then run npx @meyer0x/socrate login again`);
   }
   for (const t of parsed.tokens) secrets.add(t.token);
   return parsed.tokens;

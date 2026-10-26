@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -207,27 +208,114 @@ test('thread --captures télécharge la capture vérifiée par son empreinte', a
   assert.equal(sha(readFileSync(out.files.capture)), sha(bytes));
 });
 
-test('révocation dans le panneau puis logout : la commande suivante échoue', async () => {
-  const file = join(config, 'socrate', 'credentials.json');
-  const claude = JSON.parse(readFileSync(file, 'utf8')).tokens.find((t: { agent: string }) => t.agent === 'Claude');
-  const revoked = await call(karim, 'POST', `/v1/projects/${PROJECT}/agents/${claude.tokenId}/revoke`);
-  assert.equal(revoked.status, 200);
-  const after = await cli(['threads', '--review', REVIEW, '--agent', 'Claude']);
-  assert.equal(after.code, 1);
-  assert.match(after.stderr, /401 unauthenticated: jeton délégué révoqué; run socrate login again/);
+test('sortie lisible : les caractères de contrôle venus du service sont neutralisés, le JSON reste intact', async () => {
+  const hostile = 'Titre\u001b[2J\u001b]0;pris\u0007 et \u009b31m fin\rcaché';
+  const id = await thread(claire, hostile);
+  for (const args of [['threads', '--review', REVIEW, '--agent', 'Claude'], ['thread', id, '--review', REVIEW, '--agent', 'Claude']]) {
+    const r = await cli(args);
+    assert.equal(r.code, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/, args[0]);
+    assert.match(r.stdout, /Titre\ufffd\[2J\ufffd\]0;pris\ufffd et \ufffd31m fin[\ufffd ]caché/, args[0]);
+  }
+  const json = await cli(['thread', id, '--review', REVIEW, '--agent', 'Claude', '--json']);
+  assert.equal(JSON.parse(json.stdout).messages[0].body, hostile);
+});
 
-  const out = await cli(['logout', '--agent', 'Codex']);
-  assert.equal(out.code, 0, out.stderr);
-  assert.match(out.stdout, /logged out: Codex token for project demo revoked/);
-  const gone = await cli(['threads', '--review', REVIEW, '--agent', 'Codex']);
-  assert.equal(gone.code, 2);
-  assert.match(gone.stderr, /no Codex login for project demo/);
+/** Relais vers le service qui transmet les écritures puis perd leur réponse tant que `drop` est positif. */
+async function lossyProxy(): Promise<{ url: string; drop: (n: number) => void; server: Server }> {
+  let drop = 0;
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([k]) => !['host', 'connection', 'content-length'].includes(k)) as [string, string][]);
+    const upstream = await fetch(`${bench.service.url}${req.url}`, { method: req.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
+    const bytes = Buffer.from(await upstream.arrayBuffer());
+    if (req.method === 'POST' && drop > 0) {
+      drop--;
+      res.socket?.destroy();
+      return;
+    }
+    res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('Content-Type') ?? 'application/octet-stream' });
+    res.end(bytes);
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as { port: number };
+  return { url: `http://127.0.0.1:${port}`, drop: (n) => { drop = n; }, server };
+}
+
+test('écriture incertaine : la clé est rendue, la relance avec --key ne duplique pas ; mêmes messages, écritures distinctes', async () => {
+  const proxy = await lossyProxy();
+  try {
+    const lossy = join(repo, '..', 'lossy');
+    mkdirSync(join(lossy, 'socrate'), { recursive: true });
+    const claude = JSON.parse(readFileSync(join(config, 'socrate', 'credentials.json'), 'utf8')).tokens.find((t: { agent: string }) => t.agent === 'Claude');
+    writeFileSync(join(lossy, 'socrate', 'credentials.json'), JSON.stringify({ version: 1, tokens: [{ ...claude, service: proxy.url }] }), { mode: 0o600 });
+    writeFileSync(join(lossy, 'socrate.yml'), `service: ${proxy.url}\nproject: ${PROJECT}\npreviews: ${ORIGIN}\n`);
+    const env = { XDG_CONFIG_HOME: lossy };
+    const via = ['--config', join(lossy, 'socrate.yml'), '--review', REVIEW, '--agent', 'Claude'];
+    const id = await thread(claire, 'Le bouton déborde sur mobile.');
+
+    proxy.drop(3);
+    const lost = await cli(['reply', id, 'Corrigé dans le commit suivant.', ...via, '--json'], env);
+    assert.equal(lost.code, 1, lost.stderr);
+    const { outcome, idempotencyKey } = JSON.parse(lost.stdout);
+    assert.equal(outcome, 'uncertain');
+    assert.match(idempotencyKey, /^socrate-cli-[0-9a-f-]{36}$/);
+    assert.ok(lost.stderr.includes(`The reply may have been recorded. Run the command again with --key ${idempotencyKey} so as not to duplicate it.`), lost.stderr);
+    const retried = await cli(['reply', id, 'Corrigé dans le commit suivant.', ...via, '--key', idempotencyKey, '--json'], env);
+    assert.equal(retried.code, 0, retried.stderr);
+    const bodies = (await call(karim, 'GET', `${threadsPath}/${id}`)).json.messages.map((m: { body: string }) => m.body);
+    assert.deepEqual(bodies, ['Le bouton déborde sur mobile.', 'Corrigé dans le commit suivant.'], 'une seule réponse enregistrée');
+
+    for (const command of ['resolve', 'reopen', 'resolve']) {
+      const r = await cli([command, id, '--message', 'Même message.', ...via, ...(command === 'resolve' ? ['--no-commit'] : [])], env);
+      assert.equal(r.code, 0, `${command} : ${r.stderr}`);
+    }
+    const transitions = (await call(karim, 'GET', `${threadsPath}/${id}`)).json.messages.filter((m: { transition: unknown }) => m.transition).map((m: { transition: { state: string } }) => m.transition.state);
+    assert.deepEqual(transitions, ['resolved', 'open', 'resolved'], 'trois écritures, aucune clé tirée du contenu');
+
+    for (const [args, pattern] of [
+      [['reply', id, 'x', ...via, '--key', 'court'], /--key "court": 8 to 128/],
+      [['threads', ...via, '--key', 'socrate-cli-0000'], /threads takes no --key/],
+    ] as const) {
+      const u = await cli([...args], env);
+      assert.equal(u.code, 2, u.stderr);
+      assert.match(u.stderr, pattern);
+    }
+  } finally {
+    proxy.server.close();
+  }
+});
+
+test('révocation dans le panneau puis logout : la commande suivante échoue et le jeton quitte le fichier', async () => {
+  const file = join(config, 'socrate', 'credentials.json');
+  const stored = () => JSON.parse(readFileSync(file, 'utf8')).tokens as { agent: string; tokenId: string; token: string }[];
+  const claude = stored().find((t) => t.agent === 'Claude')!;
+  assert.equal((await call(karim, 'POST', `/v1/projects/${PROJECT}/agents/${claude.tokenId}/revoke`)).status, 200);
   const stale = await cli(['logout', '--agent', 'Claude']);
   assert.equal(stale.code, 0, 'un jeton déjà révoqué est retiré localement');
   assert.match(stale.stdout, /was already revoked or expired/);
-  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).tokens, []);
+
+  const codex = stored().find((t) => t.agent === 'Codex')!;
+  assert.equal((await call(claire, 'POST', `/v1/projects/${PROJECT}/agents/${codex.tokenId}/revoke`)).status, 200);
+  const after = await cli(['threads', '--review', REVIEW, '--agent', 'Codex']);
+  assert.equal(after.code, 1);
+  assert.match(after.stderr, /401 unauthenticated: jeton délégué révoqué; the token was removed from the credentials file: run npx @meyer0x\/socrate login again/);
+  assert.deepEqual(stored(), [], 'le jeton refusé a quitté le fichier');
+  assert.equal(statSync(file).mode & 0o777, 0o600, 'fichier réécrit en 0600');
+  const gone = await cli(['threads', '--review', REVIEW, '--agent', 'Codex']);
+  assert.equal(gone.code, 2);
+  assert.match(gone.stderr, /no Codex login for project demo on .*: run npx @meyer0x\/socrate login --agent Codex/);
+
+  const again = await login(claire, ['--agent', 'Codex']);
+  assert.equal(again.code, 0, again.stderr);
+  tokens.push(stored()[0]!.token);
+  const out = await cli(['logout', '--agent', 'Codex']);
+  assert.equal(out.code, 0, out.stderr);
+  assert.match(out.stdout, /logged out: Codex token for project demo revoked/);
+  assert.deepEqual(stored(), []);
 
   const all = outputs.join('\n');
-  assert.equal(tokens.length, 2);
+  assert.equal(tokens.length, 3);
   for (const t of tokens) assert.ok(!all.includes(t), 'aucun jeton dans aucune sortie, erreurs comprises');
 });

@@ -154,7 +154,7 @@ export async function authenticate(env: Env, request: Request): Promise<Principa
   // Le jeton délégué sert aux outils : une page qui le porterait l'exposerait à tout script de son origine.
   if (request.headers.get('Origin') !== null) throw new HttpError(403, 'forbidden', 'jeton délégué refusé depuis une page web');
   if (agent.revoked_at !== null) throw new HttpError(401, 'unauthenticated', 'jeton délégué révoqué');
-  if (agent.expires_at < nowSec) throw new HttpError(401, 'unauthenticated', 'jeton délégué expiré, relancer socrate login');
+  if (agent.expires_at < nowSec) throw new HttpError(401, 'unauthenticated', 'jeton délégué expiré, relancer npx @meyer0x/socrate login');
   const now = Date.now();
   if (agent.last_used_at === null || Date.parse(agent.last_used_at) < now - LAST_USED_GRAIN_MS) {
     await env.DB.prepare('UPDATE agent_tokens SET last_used_at = ? WHERE token_id = ? AND revoked_at IS NULL').bind(new Date(now).toISOString(), agent.token_id).run().catch(() => undefined);

@@ -17,18 +17,23 @@ export const AGENT_USAGE = `  socrate login [--agent <name>] [--config socrate.y
   socrate logout [--agent <name>] [--config socrate.yml] [--json]
   socrate threads [--pr <n> | --review <key>] [--state open|resolved|all] [--agent <name>] [--json]
   socrate thread <id> [--pr <n> | --review <key>] [--captures <dir>] [--agent <name>] [--json]
-  socrate reply <id> <message | -> [--pr <n> | --review <key>] [--agent <name>] [--json]
-  socrate resolve <id> --message <text | -> [--commit <sha> | --no-commit] [--pr <n> | --review <key>] [--agent <name>] [--json]
-  socrate reopen <id> --message <text | -> [--pr <n> | --review <key>] [--agent <name>] [--json]`;
+  socrate reply <id> <message | -> [--key <key>] [--pr <n> | --review <key>] [--agent <name>] [--json]
+  socrate resolve <id> --message <text | -> [--commit <sha> | --no-commit] [--key <key>] [--pr <n> | --review <key>] [--agent <name>] [--json]
+  socrate reopen <id> --message <text | -> [--key <key>] [--pr <n> | --review <key>] [--agent <name>] [--json]`;
 
 const OPTIONS = {
   config: { type: 'string' }, agent: { type: 'string' }, json: { type: 'boolean' }, pr: { type: 'string' }, review: { type: 'string' },
   state: { type: 'string' }, captures: { type: 'string' }, message: { type: 'string' }, commit: { type: 'string' }, 'no-commit': { type: 'boolean' },
+  key: { type: 'string' },
 } as const;
 type Values = ReturnType<typeof parseArgs<{ options: typeof OPTIONS; allowPositionals: true }>>['values'];
 
 const usage = (message: string) => new CliError(`${message}\nusage:\n${AGENT_USAGE}`, 2);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const LOGIN = 'npx @meyer0x/socrate login';
+
+/** Sortie lisible : un caractère de contrôle venu du service (corps, nom, cible, HTML) ne pilote jamais le terminal. */
+export const printable = (t: string) => t.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '\ufffd');
 
 /** Agent qui lance la commande, d'après les variables posées par Claude Code (`CLAUDECODE`) et par Codex dans ses commandes. */
 export function detectAgent(env: Io['env']): string | null {
@@ -49,6 +54,7 @@ async function request(ctx: Ctx, method: string, path: string, init: { token?: s
   const url = `${ctx.config.service}${path}`;
   const res = await fetch(url, { method, headers, body: init.body === undefined ? undefined : JSON.stringify(init.body), redirect: 'error', signal: AbortSignal.timeout(30_000) })
     .catch((e: Error) => { throw new CliError(`Socrate service unreachable (${method} ${url}): ${e.cause instanceof Error ? e.cause.message : e.message}`); });
+  if (res.status === 401 && init.token) forget(ctx, init.token);
   const bytes = new Uint8Array(await res.arrayBuffer());
   let body: unknown = null;
   if ((res.headers.get('Content-Type') ?? '').startsWith('application/json')) {
@@ -57,10 +63,17 @@ async function request(ctx: Ctx, method: string, path: string, init: { token?: s
   return { status: res.status, body, bytes };
 }
 
+/** Un jeton refusé (révoqué, expiré) quitte le fichier d'identifiants, toujours réécrit en 0600 par renommage. */
+function forget(ctx: Ctx, token: string): void {
+  const all = readTokens(ctx.io.env);
+  const kept = all.filter((t) => t.token !== token);
+  if (kept.length < all.length) writeTokens(ctx.io.env, kept);
+}
+
 function refused(r: Reply, what: string): CliError {
   const e = r.body as Partial<ApiError> | null;
-  const hint = r.status === 401 ? '; run socrate login again' : '';
-  return new CliError(`the Socrate service refused ${what}: ${r.status} ${e?.code ?? ''}${e?.message ? `: ${e.message}` : ''}${hint}`);
+  const hint = r.status === 401 ? `; the token was removed from the credentials file: run ${LOGIN} again` : '';
+  return new CliError(printable(`the Socrate service refused ${what}: ${r.status} ${e?.code ?? ''}${e?.message ? `: ${e.message}` : ''}${hint}`));
 }
 
 async function expect<T>(ctx: Ctx, what: string, method: string, path: string, init: { token?: string; body?: unknown } = {}): Promise<T> {
@@ -69,13 +82,17 @@ async function expect<T>(ctx: Ctx, what: string, method: string, path: string, i
   return r.body as T;
 }
 
+const KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+
 /**
- * Une écriture : une seule clé d'idempotence pour toutes les tentatives. Une réponse perdue ou un refus réessayable
- * relance la même requête, que le service reconnaît au lieu d'écrire deux fois.
+ * Une écriture : une seule clé d'idempotence pour toutes les tentatives, tirée au hasard ou passée par `--key`. Une réponse
+ * perdue ou un refus réessayable relance la même requête, que le service reconnaît au lieu d'écrire deux fois. Si l'issue
+ * reste inconnue (réseau, 5xx), la clé est rendue : relancer avec `--key` ne duplique pas une écriture peut-être faite.
  */
 async function write<T>(ctx: Ctx, what: string, path: string, token: string, body: unknown): Promise<T> {
-  const key = `socrate-cli-${randomUUID()}`;
+  const key = ctx.values.key ?? `socrate-cli-${randomUUID()}`;
   let last: CliError | null = null;
+  let unknown = false;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await sleep(1000 * attempt);
     let r: Reply;
@@ -83,13 +100,18 @@ async function write<T>(ctx: Ctx, what: string, path: string, token: string, bod
       r = await request(ctx, 'POST', path, { token, body, key });
     } catch (e) {
       last = e as CliError;
+      unknown = true;
       continue;
     }
     if (r.status >= 200 && r.status < 300) return r.body as T;
     last = refused(r, what);
-    if (!(r.body as Partial<ApiError> | null)?.retryable) throw last;
+    unknown = r.status >= 500;
+    if (!(r.body as Partial<ApiError> | null)?.retryable) break;
   }
-  throw last!;
+  if (!unknown) throw last!;
+  const message = `${last!.message}\nThe ${what.replace(/^the /, '')} may have been recorded. Run the command again with --key ${key} so as not to duplicate it.`;
+  if (ctx.values.json) ctx.io.log(JSON.stringify({ outcome: 'uncertain', idempotencyKey: key, message: last!.message }, null, 2));
+  throw new CliError(message);
 }
 
 function agentName(values: Values, env: Io['env']): string | null {
@@ -105,11 +127,11 @@ function pickToken(ctx: Ctx): StoredToken {
   const name = agentName(ctx.values, ctx.io.env);
   if (name) {
     const t = mine.find((x) => sameSlot(x, { ...slot, agent: name }));
-    if (!t) throw usage(`no ${name} login for project ${slot.projectId} on ${slot.service}: run socrate login --agent ${name}`);
+    if (!t) throw usage(`no ${name} login for project ${slot.projectId} on ${slot.service}: run ${LOGIN} --agent ${name}`);
     return t;
   }
   if (mine.length === 1) return mine[0]!;
-  if (!mine.length) throw usage(`not logged in for project ${slot.projectId} on ${slot.service}: run socrate login --agent <name>`);
+  if (!mine.length) throw usage(`not logged in for project ${slot.projectId} on ${slot.service}: run ${LOGIN} --agent <name>`);
   throw usage(`several agents are logged in for project ${slot.projectId} (${mine.map((t) => t.agent).join(', ')}): pass --agent`);
 }
 
@@ -176,7 +198,8 @@ async function login(ctx: Ctx): Promise<void> {
   const machine = cut(line(hostname()).replace(/\p{C}/gu, ''), 64) || 'unknown';
   const started = await expect<DeviceStart>(ctx, 'the login', 'POST', '/v1/auth/device', { body: { projectId: ctx.config.project, agent, machine } });
   secrets.add(started.deviceCode);
-  const say = ctx.values.json ? (ctx.io.warn ?? (() => {})) : ctx.io.log;
+  const sink = ctx.values.json ? (ctx.io.warn ?? (() => {})) : ctx.io.log;
+  const say = (t: string) => sink(printable(t));
   say(`To let ${agent} read, reply and resolve on your behalf on project ${ctx.config.project} (${ctx.config.service}):`);
   say('  1. open a Socrate preview of this project where you are signed in;');
   say('  2. in the Socrate toolbar, choose "Plus d’options", then "Connecter un agent";');
@@ -186,7 +209,7 @@ async function login(ctx: Ctx): Promise<void> {
   const deadline = Date.now() + started.expiresIn * 1000;
   let grant: AgentGrant | null = null;
   while (!grant) {
-    if (Date.now() > deadline) throw new CliError('the code expired before approval: run socrate login again');
+    if (Date.now() > deadline) throw new CliError(`the code expired before approval: run ${LOGIN} again`);
     await sleep(interval * 1000);
     let r: Reply;
     try {
@@ -312,11 +335,13 @@ async function transition(ctx: Ctx, id: string | undefined, state: 'resolve' | '
 export async function runAgent(command: string, argv: string[], io: Io): Promise<void> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: OPTIONS });
   const config = loadConfig(io.cwd, values.config);
-  const out = (human: string, json: unknown) => io.log(values.json ? JSON.stringify(json, null, 2) : human);
+  const out = (human: string, json: unknown) => io.log(values.json ? JSON.stringify(json, null, 2) : printable(human));
   const ctx: Ctx = { io, config, values, out };
   const [id, extra, ...rest] = positionals;
   const max = command === 'reply' ? 2 : ['thread', 'resolve', 'reopen'].includes(command) ? 1 : 0;
   if (positionals.length > max || rest.length) throw usage(`unexpected argument ${JSON.stringify(positionals[max])}`);
+  if (values.key !== undefined && !['reply', 'resolve', 'reopen'].includes(command)) throw usage(`${command} takes no --key`);
+  if (values.key !== undefined && !KEY_PATTERN.test(values.key)) throw usage(`--key ${JSON.stringify(values.key)}: 8 to 128 letters, digits, dashes or underscores`);
   if (command === 'login') return login(ctx);
   if (command === 'logout') return logout(ctx);
   if (command === 'threads') return threads(ctx);

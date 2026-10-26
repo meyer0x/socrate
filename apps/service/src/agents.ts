@@ -83,9 +83,9 @@ export async function exchangeDevice(env: Env, deviceCode: string): Promise<Agen
   const hash = await tokenHash(deviceCode);
   const row = await env.DB.prepare('SELECT * FROM device_authorizations WHERE device_hash = ?').bind(hash).first<DeviceRow>();
   const now = nowSec();
-  if (!row || row.expires_at < now) throw deviceError('expired_token', 'code expiré ou inconnu : relancer socrate login');
+  if (!row || row.expires_at < now) throw deviceError('expired_token', 'code expiré ou inconnu : relancer npx @meyer0x/socrate login');
   if (row.state === 'denied') throw deviceError('access_denied', 'autorisation refusée dans le panneau');
-  if (row.state === 'consumed') throw deviceError('invalid_grant', 'code déjà échangé : relancer socrate login');
+  if (row.state === 'consumed') throw deviceError('invalid_grant', 'code déjà échangé : relancer npx @meyer0x/socrate login');
   if (row.state === 'pending') {
     const ms = Date.now();
     const early = row.last_poll_ms !== null && ms - row.last_poll_ms < row.poll_interval * 1000;
@@ -109,9 +109,9 @@ export async function exchangeDevice(env: Env, deviceCode: string): Promise<Agen
     ]);
     consumed = update!.meta.changes ?? 0;
   } catch {
-    throw uncertain('échange non confirmé : relancer socrate login');
+    throw uncertain('échange non confirmé : relancer npx @meyer0x/socrate login');
   }
-  if (consumed === 0) throw deviceError('invalid_grant', 'code déjà échangé ou expiré : relancer socrate login');
+  if (consumed === 0) throw deviceError('invalid_grant', 'code déjà échangé ou expiré : relancer npx @meyer0x/socrate login');
   return {
     accessToken: token, tokenType: 'Bearer', tokenId, projectId: row.project_id, agent: row.agent, machine: row.machine,
     actor: { key: row.actor_key!, displayName: row.actor_name! }, capabilities, expiresAt: isoOf(expiresAt),
@@ -147,7 +147,7 @@ async function lookup(env: Env, p: Extract<Principal, { kind: 'session' }>, inpu
 }
 
 function requireUndecided(row: DeviceRow): void {
-  if (row.expires_at < nowSec()) throw new HttpError(410, 'expired_token', 'code expiré : relancer socrate login');
+  if (row.expires_at < nowSec()) throw new HttpError(410, 'expired_token', 'code expiré : relancer npx @meyer0x/socrate login');
   if (row.state !== 'pending') throw new HttpError(409, 'state_conflict', 'code déjà approuvé ou refusé');
 }
 
