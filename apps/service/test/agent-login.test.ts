@@ -166,6 +166,16 @@ test('force brute : cinq codes inconnus par acteur sur dix minutes, puis tout es
   assert.equal((await details(karim, s.json.userCode)).status, 200, 'les autres acteurs ne sont pas bloqués');
 });
 
+test('force brute en parallèle : vingt codes inconnus simultanés, au plus cinq 404, les autres 429', async () => {
+  const pressee = await sessionClient(bench, { deploymentId: 'local-1', sub: 'pressee', name: 'Relectrice Pressée' });
+  const codes = Array.from({ length: 20 }, (_, i) => `CCCC-${'BCDFGHJKMN'[Math.floor(i / 10)]}${'BCDFGHJKMN'[i % 10]}CC`);
+  const statuses = (await Promise.all(codes.map((code) => details(pressee, code)))).map((r) => r.status);
+  assert.ok(statuses.every((s) => s === 404 || s === 429), statuses.join(','));
+  assert.ok(statuses.filter((s) => s === 404).length <= 5, statuses.join(','));
+  const attempts = (await db().prepare('SELECT COUNT(*) AS n FROM device_attempts WHERE actor_key = ?').bind(`${ISSUER}:pressee`).first<{ n: number }>())!.n;
+  assert.equal(attempts, 5, 'un essai réservé par 404, aucun pour un 429');
+});
+
 test('plafond des codes en attente par projet', async () => {
   const pending = (await db().prepare("SELECT COUNT(*) AS n FROM device_authorizations WHERE project_id = 'autre' AND state = 'pending'").first<{ n: number }>())!.n;
   for (let i = pending; i < 20; i++) assert.equal((await start('Codex', `poste-${i}`, 'autre')).status, 201);

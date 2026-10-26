@@ -126,21 +126,23 @@ function reviewer(p: Principal, projectId: string): Extract<Principal, { kind: '
 }
 
 /**
- * Code saisi dans le panneau : la recherche d'un code inconnu, mal formé ou d'un autre projet compte comme un échec de l'acteur ;
- * au-delà du plafond sur la fenêtre, toute recherche est refusée avant lecture.
+ * Code saisi dans le panneau : chaque recherche réserve d'abord un essai, dans l'instruction même qui compte ceux de la fenêtre,
+ * pour que des recherches parallèles ne dépassent pas le plafond. Au-delà, toute recherche est refusée avant lecture. Un code
+ * trouvé rend sa réservation ; un code inconnu, mal formé ou d'un autre projet la garde comme échec de l'acteur.
  */
 async function lookup(env: Env, p: Extract<Principal, { kind: 'session' }>, input: string): Promise<DeviceRow> {
-  const since = Date.now() - FAILED_LOOKUP_WINDOW_MS;
-  const failures = (await env.DB.prepare('SELECT COUNT(*) AS n FROM device_attempts WHERE project_id = ? AND actor_key = ? AND at_ms >= ?').bind(p.projectId, p.actor.key, since).first<{ n: number }>())!.n;
-  if (failures >= MAX_FAILED_LOOKUPS) throw new HttpError(429, 'rate_limited', 'trop de codes inconnus saisis : réessayer dans dix minutes', true);
+  const now = Date.now();
+  const reserved = await env.DB.prepare(
+    `INSERT INTO device_attempts (project_id, actor_key, at_ms)
+     SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM device_attempts WHERE project_id = ? AND actor_key = ? AND at_ms >= ?) < ?`,
+  ).bind(p.projectId, p.actor.key, now, p.projectId, p.actor.key, now - FAILED_LOOKUP_WINDOW_MS, MAX_FAILED_LOOKUPS).run();
+  if ((reserved.meta.changes ?? 0) === 0) throw new HttpError(429, 'rate_limited', 'trop de codes inconnus saisis : réessayer dans dix minutes', true);
   const code = normalizeUserCode(input);
   const row = USER_CODE_PATTERN.test(code)
     ? await env.DB.prepare('SELECT * FROM device_authorizations WHERE user_code = ? AND project_id = ?').bind(code, p.projectId).first<DeviceRow>()
     : null;
-  if (!row) {
-    await env.DB.prepare('INSERT INTO device_attempts (project_id, actor_key, at_ms) VALUES (?, ?, ?)').bind(p.projectId, p.actor.key, Date.now()).run();
-    throw new HttpError(404, 'not_found', 'code inconnu pour ce projet : vérifier le code affiché par la commande');
-  }
+  if (!row) throw new HttpError(404, 'not_found', 'code inconnu pour ce projet : vérifier le code affiché par la commande');
+  await env.DB.prepare('DELETE FROM device_attempts WHERE rowid = ?').bind(reserved.meta.last_row_id).run();
   return row;
 }
 
