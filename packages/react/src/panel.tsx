@@ -3,7 +3,7 @@ import type { Message, Revision, ThreadWithMessages, Session } from '@socrate/co
 import type { TabCapture, CaptureStatus } from './capture.ts';
 import type { Cycle } from './guide.tsx';
 import { ReviewClient, isStaleTargeted, ownerOf, type Owner } from './client.ts';
-import { COMMENT_LABELS, MessageMedia, Notice, TARGETED_LABELS, describeCapture, describeTransition, useSubmission } from './conversation.tsx';
+import { COMMENT_LABELS, MessageMedia, Notice, TARGETED_LABELS, Transition, describeCapture, useSubmission } from './conversation.tsx';
 
 export type NavigationAdapter = { go(route: string): void; current(): string };
 
@@ -262,7 +262,7 @@ function ThreadView({ epoch, thread, client, navigation, revisionId, session, se
             <strong>{m.author.displayName}</strong>
             {m.via ? ` · via ${m.via}` : ''}
             {m.exploring ? ` (compte exploré : ${m.exploring.account})` : ''} · {formatDate(m.createdAt)}
-            {m.transition ? ` · ${describeTransition(m.transition)}` : ''}
+            {m.transition && <> · <Transition m={m} /></>}
           </div>
           <p>{m.body}</p>
           {m.attachments.length > 0 && <Suspense fallback={null}><MessageMedia client={client} attachments={m.attachments} /></Suspense>}
@@ -308,6 +308,7 @@ function TargetView({ epoch, thread, client, navigation }: { epoch: number; thre
         : <button type="button" className="socrate-button link" onClick={() => client.captureBlob(c.captureId).then((b) => setUrl(URL.createObjectURL(b)), (e: Error) => setError(e.message))}>Afficher l’image</button>}
       {error && <p className="socrate-status" data-kind="error" role="alert">{error}</p>}
       <Deferred key={epoch} label="Localiser la cible" load={() => { const c = cycle; return guide().then((g) => g.locateTarget(c, t, navigation)); }} />
+      <Deferred label="Voir où c’était" load={() => import('./where.tsx').then((w) => <w.WhereView thread={thread} client={client} />)} />
     </div>
   );
 }

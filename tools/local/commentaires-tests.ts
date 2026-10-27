@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import type { Page, Locator } from 'playwright';
 import { ALL_FORMATS, BufferSource, EncodedPacketSink, Input } from 'mediabunny';
 import { REPO_ROOT, deadlineIn, localPath, portNumber, runtime, browser as browserBoundary } from './local-run.ts';
+import { signAssertion } from './assertion.ts';
 import type { InstanceHandle } from './runtime.ts';
 import type { LocalBrowser, LocalContext, SeenRequest } from './browser.ts';
 
@@ -534,7 +535,7 @@ test('R26 ancrage : contrôle vide parmi des jumeaux, ligne répétée recyclée
     // Fil sans cible sur la page : lisible et répondable depuis la liste, aucune action de localisation proposée.
     await control(page, 'launcher').click();
     const row = list(page).locator(`[data-testid="socrate-row"][data-thread="${ids.martin}"]`);
-    assert.match(await row.innerText(), /Élément introuvable sur cet écran/);
+    await row.getByRole('button', { name: 'Voir où c’était' }).waitFor();
     assert.equal(await row.getByRole('button', { name: 'Voir sur la page' }).count(), 0);
     await row.locator('.socrate-row').click();
     const conv = row.getByTestId('socrate-conversation');
@@ -1601,7 +1602,7 @@ test('liste : ouvertes de cet écran par défaut, généraux toujours visibles, 
   assert.match(autre, /Autre page · \/rendez-vous\/rdv-1042/, 'page du fil indiquée');
   assert.equal(arrivee, '/rendez-vous/rdv-1042', 'navigation explicite vers la page du fil');
   assert.equal(absente.route, '/rendez-vous/rdv-1042');
-  assert.match(absente.ligne, /Élément introuvable sur cet écran/, `cible ambiguë : aucune pastille arbitraire, fil lisible ${all}`);
+  assert.match(absente.ligne, /Voir où c’était/, `cible ambiguë : aucune pastille arbitraire, fil lisible ${all}`);
   assert.equal(absente.pastille, 0);
   assert.equal(erreur.vide, 0, `erreur de lecture jamais présentée comme liste vide ${all}`);
   assert.match(erreur.alerte, /Service momentanément indisponible/, `erreur de lecture nommée ${all}`);
@@ -2781,5 +2782,261 @@ test('largeur du panneau : poignée au pointeur à travers l’iframe et au clav
     await page.waitForTimeout(200);
     assert.equal(await width(), w, 'préférence retrouvée en fenêtre large');
     facts.mediaLargeur = { initiale: 380, min: 320, max1280: 960, fenetre700: 420, conservee: w };
+  } finally { await ctx.context.close(); }
+});
+
+// Retours lisibles après redéploiement : nouveau déploiement de la démo à la même origine, enregistré par l'API d'import comme le fait la CI.
+const API = () => `${stack.view.serviceUrl}/v1/projects/demo/reviews/rappels-automatiques`;
+const CLAIRE = { sub: 'claire', name: 'Claire Morel', capabilities: ['thread.participate'] };
+const KARIM = { sub: 'karim', name: 'Karim Benali', capabilities: ['thread.participate', 'thread.moderate'] };
+/**
+ * Enregistre le déploiement `id` (même manifeste que local-1, commit donné) puis sert à ce contexte le contexte de preview et l'assertion de l'hôte de ce déploiement,
+ * signée par le banc avec la clé de l'instance : la page rechargée est celle d'un nouveau build, les fils restent ceux de local-1.
+ */
+async function redeploy(ctx: LocalContext, id: string, persona: typeof CLAIRE, commit = 'd00dfeed0001') {
+  const local1 = await (await fetch(`${API()}/deployments/local-1`, { headers: { Authorization: `Bearer ${stack.credentials.agent}` } })).json() as { revision: { manifest: unknown } };
+  const put = await fetch(`${API()}/deployments/${id}`, {
+    method: 'PUT', headers: { Authorization: `Bearer ${stack.credentials.import}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ commit, buildId: id, url: `${stack.view.demoOrigin}/`, manifest: local1.revision.manifest }),
+  });
+  assert.equal(put.status, 201, `déploiement ${id} enregistré`);
+  const privateJwk = JSON.parse(await readFile(join(stack.view.root, 'keys/issuer-private.jwk.json'), 'utf8'));
+  const preview = JSON.parse(await readFile(join(stack.view.root, 'preview-context.json'), 'utf8'));
+  ctx.setFaults((r) => {
+    if (path(r) === '/api/preview-context') return { kind: 'respond', status: 200, body: { serviceUrl: preview.serviceUrl, projectId: preview.projectId, reviewKey: preview.reviewKey, deploymentId: id, instanceId: preview.instanceId } };
+    if (path(r) === '/api/socrate/assertion') {
+      return { kind: 'respond', status: 200, body: { assertion: signAssertion(privateJwk, { issuer: preview.issuer, audience: preview.audience, ...persona, projectId: 'demo', reviewKey: 'rappels-automatiques', deploymentId: id, origin: stack.view.demoOrigin }) } };
+    }
+    return { kind: 'pass' };
+  });
+  return (await db().prepare('SELECT created_at FROM deployments WHERE deployment_id = ?').bind(id).first<string>('created_at'))!;
+}
+const targetOf = async (threadId: string) => JSON.parse((await db().prepare('SELECT context FROM targets WHERE thread_id = ?').bind(threadId).first<{ context: string }>())!.context);
+const row = (page: Page, threadId: string) => list(page).locator(`[data-testid="socrate-row"][data-thread="${threadId}"]`);
+async function comment(page: Page, on: Locator, body: string) {
+  await targetElement(page, on);
+  await bubble(page).getByRole('textbox', { name: 'Votre commentaire' }).fill(body);
+  await send(page);
+  await page.locator('#socrate-bubble').waitFor({ state: 'hidden', timeout: 15_000 });
+  return (await threadOf(body))!.thread_id;
+}
+
+test('voir où c’était (échelle 2, page défilée) : capture recadrée et encadrée à l’échelle exacte, fenêtre nommée ou rien pour un ancien retour, Réessayer après ouverture de la fenêtre', async () => {
+  const ctx = await browser.newContext(origins(), { deviceScaleFactor: 2 });
+  try {
+    const page = await loginAs(ctx, 'Claire Morel, relectrice produit', '/reglages/rappels');
+    await toolbarReady(page);
+    await page.addStyleTag({ content: 'body{padding-bottom:1600px}' });
+    await page.evaluate(() => scrollTo(0, 300));
+    await page.getByTestId('open-courte').click();
+    const intro = page.getByTestId('scene-intro');
+    await intro.waitFor();
+
+    // Service antérieur au champ `container` : son refus 422 sur ce seul champ, puis la même charge sans lui.
+    let refused = false;
+    ctx.setFaults((r) => {
+      if (refused || r.method !== 'POST' || !path(r).endsWith('/targeted')) return { kind: 'pass' };
+      refused = true;
+      return { kind: 'respond', status: 422, body: { code: 'invalid_request', message: 'retour ciblé invalide', requestId: 'banc', retryable: false, issues: [{ path: 'target.container', message: 'donnée inconnue refusée' }] } };
+    });
+    const ancien = await comment(page, intro, 'Ancien service : la fenêtre n’est pas enregistrée.');
+    ctx.setFaults(null);
+    const posts = toService(ctx, (r) => r.method === 'POST' && path(r).endsWith('/targeted')).map((r) => 'container' in JSON.parse(r.postData!).target);
+    assert.deepEqual(posts, [true, false], 'refus du seul champ nouveau, puis même charge sans lui');
+    assert.ok(!('container' in await targetOf(ancien)), 'ancien retour sans fenêtre');
+
+    const box = (await intro.boundingBox())!;
+    const body = 'L’introduction du modèle court est trop vague.';
+    const id = await comment(page, intro, body);
+    const target = await targetOf(id);
+    assert.deepEqual(target.container, { label: 'Modèle de rappel court' }, 'fenêtre et libellé relevés au ciblage');
+    assert.equal(target.viewport.devicePixelRatio, 2);
+    assert.ok(target.viewport.scrollY > 200, `page défilée au ciblage (${target.viewport.scrollY})`);
+    for (const k of ['x', 'y', 'width', 'height'] as const) assert.ok(Math.abs(target.rect[k] - box[k]) < 1, `rectangle en pixels CSS de la fenêtre (${k})`);
+    await page.getByTestId('scene-dialog').getByRole('button', { name: 'Fermer' }).click();
+    await page.getByTestId('scene-dialog').waitFor({ state: 'hidden' });
+
+    await redeploy(ctx, 'local-20', CLAIRE);
+    await page.reload();
+    await toolbarReady(page);
+    await control(page, 'launcher').click();
+    for (const t of [ancien, id]) {
+      await row(page, t).getByRole('button', { name: 'Voir où c’était' }).waitFor();
+      assert.doesNotMatch(await row(page, t).innerText(), /introuvable|Voir sur la page/);
+    }
+
+    await row(page, ancien).getByRole('button', { name: 'Voir où c’était' }).click();
+    await list(page).getByTestId('socrate-where-image').waitFor();
+    assert.equal(await list(page).getByTestId('socrate-where-container').count(), 0, 'ancien retour : aucune fenêtre annoncée');
+    await list(page).getByRole('button', { name: 'Retour aux conversations' }).click();
+
+    await row(page, id).getByRole('button', { name: 'Voir où c’était' }).click();
+    const where = list(page).getByTestId('socrate-where');
+    await where.getByText('Cette version de la page a changé : l’élément n’est pas retrouvé avec certitude. Voici où il était quand le retour a été écrit.').waitFor();
+    assert.equal(await where.getByTestId('socrate-where-container').innerText(), 'C’était dans la fenêtre « Modèle de rappel court ». Ouvrez-la, puis cliquez sur Réessayer.');
+    const canvas = where.getByTestId('socrate-where-image');
+    await canvas.waitFor();
+    const capture = await db().prepare('SELECT c.capture_id, c.width, c.height FROM targets t JOIN captures c USING (project_id, review_key, capture_id) WHERE t.thread_id = ?').bind(id).first<{ capture_id: string; width: number; height: number }>();
+    assert.deepEqual([capture!.width, capture!.height], [target.viewport.width * 2, target.viewport.height * 2], 'image à l’échelle 2');
+    const png = Buffer.from(await (await fetch(`${API()}/captures/${capture!.capture_id}`, { headers: { Authorization: `Bearer ${stack.credentials.agent}` } })).arrayBuffer());
+    const r = target.rect;
+    const css = { x: Math.max(0, r.x - 96), y: Math.max(0, r.y - 96) };
+    const expected = {
+      crop: [Math.round(css.x * 2), Math.round(css.y * 2), Math.round((Math.min(target.viewport.width, r.x + r.width + 96) - css.x) * 2), Math.round((Math.min(target.viewport.height, r.y + r.height + 96) - css.y) * 2)].join(','),
+      frame: [Math.round((r.x - css.x) * 2), Math.round((r.y - css.y) * 2), Math.round(r.width * 2), Math.round(r.height * 2)].join(','),
+    };
+    assert.deepEqual({ crop: await canvas.getAttribute('data-crop'), frame: await canvas.getAttribute('data-frame'), scale: await canvas.getAttribute('data-scale') }, { ...expected, scale: '2' }, 'recadrage autour du rectangle à l’échelle 2, sans décalage de défilement');
+    // Pixels : hors du trait, la vue est la capture elle-même à l'emplacement recadré ; le trait est orange autour de la cible.
+    const pixels = await page.evaluate(async ({ png, view, crop, frame }) => {
+      const load = async (src: string) => { const i = new Image(); i.src = src; await i.decode(); const c = document.createElement('canvas'); c.width = i.naturalWidth; c.height = i.naturalHeight; const g = c.getContext('2d')!; g.drawImage(i, 0, 0); return g.getImageData(0, 0, c.width, c.height); };
+      const [full, shown] = [await load(`data:image/png;base64,${png}`), await load(view)];
+      const [cx, cy, cw, ch] = crop.split(',').map(Number);
+      const [fx, fy, fw, fh] = frame.split(',').map(Number);
+      const line = Math.max(6, cw! / 120);
+      const near = (x: number, y: number) => x > fx! - line - 2 && x < fx! + fw! + line + 2 && y > fy! - line - 2 && y < fy! + fh! + line + 2 && !(x > fx! + 2 && x < fx! + fw! - 2 && y > fy! + 2 && y < fy! + fh! - 2);
+      let compared = 0, worst = 0;
+      for (let y = 0; y < ch!; y += 3) for (let x = 0; x < cw!; x += 3) {
+        if (near(x, y)) continue;
+        const a = (y * shown.width + x) * 4, b = ((cy! + y) * full.width + cx! + x) * 4;
+        for (let k = 0; k < 3; k++) worst = Math.max(worst, Math.abs(shown.data[a + k]! - full.data[b + k]!));
+        compared++;
+      }
+      const at = (x: number, y: number) => [...shown.data.slice((y * shown.width + x) * 4, (y * shown.width + x) * 4 + 3)];
+      return { size: [shown.width, shown.height], compared, worst, top: at(fx! + Math.round(fw! / 2), fy! - Math.round(line / 2)), left: at(fx! - Math.round(line / 2), fy! + Math.round(fh! / 2)) };
+    }, { png: png.toString('base64'), view: await canvas.evaluate((c: HTMLCanvasElement) => c.toDataURL('image/png')), crop: expected.crop, frame: expected.frame });
+    facts.voirOuCetait = { target: { rect: r, viewport: target.viewport, container: target.container }, expected, pixels };
+    assert.deepEqual(pixels.size, expected.crop.split(',').slice(2).map(Number), 'image recadrée à la résolution de la capture');
+    assert.ok(pixels.compared > 1000 && pixels.worst <= 2, `hors du cadre, la vue reprend la capture au pixel près (${JSON.stringify(pixels)})`);
+    for (const c of [pixels.top, pixels.left]) assert.ok(Math.abs(c[0]! - 0xf5) <= 2 && Math.abs(c[1]! - 0xa6) <= 2 && Math.abs(c[2]! - 0x23) <= 2, `cadre orange autour de la cible (${c})`);
+    await shot(page, 'voir-ou-cetait-recadre');
+
+    await where.getByRole('button', { name: 'Voir la capture entière' }).click();
+    await where.locator('[data-testid="socrate-where-image"][data-whole]').waitFor();
+    assert.equal(await canvas.getAttribute('data-crop'), `0,0,${capture!.width},${capture!.height}`);
+    assert.equal(await canvas.getAttribute('data-frame'), [Math.round(r.x * 2), Math.round(r.y * 2), Math.round(r.width * 2), Math.round(r.height * 2)].join(','));
+    await shot(page, 'voir-ou-cetait-entiere');
+
+    await where.getByRole('button', { name: 'Réessayer' }).click();
+    await where.getByTestId('socrate-where-missed').waitFor();
+    await page.getByTestId('open-courte').click();
+    await intro.waitFor();
+    await where.getByRole('button', { name: 'Réessayer' }).click();
+    const conv = bubble(page).locator(`[data-testid="socrate-conversation"][data-thread="${id}"]`);
+    await conv.waitFor({ timeout: 10_000 });
+    await conv.getByText(body).waitFor();
+    assert.equal(await list(page).getByTestId('socrate-where').count(), 0, 'retrouvée : la vue laisse place au fil sur la page');
+    const pin = page.locator(`[data-socrate="pin"][data-threads~="${id}"]`);
+    await pin.waitFor();
+    assert.equal(await pin.getAttribute('data-probable'), 'true');
+    assert.match((await pin.getAttribute('aria-label'))!, /^Position probable · /);
+    await shot(page, 'voir-ou-cetait-reessayer');
+    assert.deepEqual(ctx.blocked, []);
+  } finally { await ctx.context.close(); }
+});
+
+test('nouveau déploiement sans identifiant éditorial : un seul candidat de même rôle au même début de texte devient une position probable ; deux candidats ou un autre rôle, aucune pastille', async () => {
+  const ctx = await browser.newContext(origins());
+  try {
+    const page = await loginAs(ctx, 'Claire Morel, relectrice produit', '/activite');
+    await toolbarReady(page);
+    const note = page.getByTestId('note-suivi');
+    const bernard = page.locator('ul[aria-label="Appels"] span', { hasText: 'Appel de M. Fictif Bernard' });
+    const durand = page.getByTestId('contact-durand').locator('span');
+    const ids = {
+      unique: await comment(page, note, 'Probable : la note de suivi devrait dater le rappel.'),
+      deux: await comment(page, bernard.first(), 'Deux candidats : le premier appel de M. Fictif Bernard.'),
+      role: await comment(page, durand, 'Autre rôle : le nom du contact devrait être un lien.'),
+    };
+    assert.deepEqual(await Promise.all(Object.values(ids).map(async (t) => (await targetOf(t)).role)), ['p', 'span', 'span']);
+
+    await redeploy(ctx, 'local-21', CLAIRE);
+    await page.reload();
+    await page.getByRole('heading', { level: 1, name: 'Activité' }).waitFor();
+    await toolbarReady(page);
+    // Le nouveau build rend le même nom avec un autre rôle : même balise, même texte, nouvel élément.
+    await durand.evaluate((el) => { const next = el.cloneNode(true) as Element; next.setAttribute('role', 'button'); el.replaceWith(next); });
+    const seen = await pinsSettle(page, {
+      unique: { id: ids.unique, on: note, expected: true },
+      deux: { id: ids.deux, on: bernard.first(), expected: false },
+      deuxSecond: { id: ids.deux, on: bernard.nth(1), expected: false },
+      role: { id: ids.role, on: durand, expected: false },
+    });
+    const pin = page.locator(`[data-socrate="pin"][data-threads~="${ids.unique}"]`);
+    facts.positionProbable = { seen, label: await pin.getAttribute('aria-label'), probable: await pin.getAttribute('data-probable') };
+    assert.deepEqual(seen, { unique: true, deux: false, deuxSecond: false, role: false }, JSON.stringify(facts.positionProbable));
+    assert.equal(await page.locator(`[data-socrate="pin"][data-threads~="${ids.deux}"], [data-socrate="pin"][data-threads~="${ids.role}"]`).count(), 0);
+    assert.equal(await pin.getAttribute('data-probable'), 'true');
+    assert.match((await pin.getAttribute('aria-label'))!, /^Position probable · Conversation de Claire Morel/);
+    assert.equal(await pin.evaluate((el) => getComputedStyle(el).borderTopStyle), 'dashed', 'pastille visiblement probable');
+    await shot(page, 'position-probable-pastille');
+
+    await control(page, 'launcher').click();
+    assert.match(await row(page, ids.unique).innerText(), /Voir sur la page · position probable/);
+    for (const t of [ids.deux, ids.role]) {
+      await row(page, t).getByRole('button', { name: 'Voir où c’était' }).waitFor();
+      assert.equal(await row(page, t).getByRole('button', { name: 'Voir sur la page' }).count(), 0);
+    }
+    await shot(page, 'position-probable-liste');
+    await row(page, ids.unique).getByRole('button', { name: 'Voir sur la page' }).click();
+    await bubble(page).locator(`[data-testid="socrate-conversation"][data-thread="${ids.unique}"]`).waitFor();
+    assert.deepEqual(ctx.blocked, []);
+  } finally { await ctx.context.close(); }
+});
+
+test('résolution par un agent avec commit : en attente de la prochaine preview, puis en ligne depuis le déploiement qui porte le commit ; commit au survol, aucun identifiant de déploiement', async () => {
+  const ctx = await browser.newContext(origins());
+  try {
+    const page = await loginAs(ctx, 'Karim Benali, développeur');
+    await toolbarReady(page);
+    await control(page, 'launcher').click();
+    const body = 'Le titre de l’agenda est trop petit sur mobile.';
+    await list(page).getByRole('textbox', { name: 'Votre commentaire global' }).fill(body);
+    await list(page).getByRole('button', { name: 'Envoyer' }).click();
+    await list(page).getByTestId('socrate-row').filter({ hasText: body }).waitFor();
+    const id = (await threadOf(body))!.thread_id;
+
+    // Agent connecté par le vrai parcours : code demandé sans Origin, approuvé dans le panneau par Karim, échangé contre le jeton délégué.
+    const started = await (await fetch(`${stack.view.serviceUrl}/v1/auth/device`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: 'demo', agent: 'Claude', machine: 'banc-commentaires' }) })).json() as { deviceCode: string; userCode: string };
+    await control(page, 'more').click();
+    await control(page, 'agents').click();
+    await list(page).getByTestId('socrate-code').fill(started.userCode);
+    await list(page).getByRole('button', { name: 'Continuer' }).click();
+    await list(page).getByRole('button', { name: 'Autoriser' }).click();
+    await list(page).getByTestId('socrate-agent-done').waitFor();
+    const grant = await (await fetch(`${stack.view.serviceUrl}/v1/auth/device/token`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceCode: started.deviceCode }) })).json() as { accessToken: string };
+    const commit = '0a1b2c3d4e5f6a7b';
+    const resolved = await fetch(`${API()}/threads/${id}/resolve`, {
+      method: 'POST', headers: { Authorization: `Bearer ${grant.accessToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomBytes(16).toString('hex') },
+      body: JSON.stringify({ message: 'Titre agrandi.', commit }),
+    });
+    assert.equal(resolved.status, 201);
+
+    // Liste rouverte pour la relire, quel que soit son état.
+    const transition = async () => {
+      if ((await control(page, 'launcher').getAttribute('aria-expanded')) === 'true') await control(page, 'launcher').click();
+      await control(page, 'launcher').click();
+      await list(page).getByRole('button', { name: /^Résolues/ }).click();
+      await row(page, id).locator('.socrate-row').click();
+      const t = row(page, id).getByTestId('socrate-conversation').getByTestId('socrate-transition');
+      await t.waitFor();
+      return { text: await t.innerText(), title: await t.getAttribute('title'), conversation: await row(page, id).getByTestId('socrate-conversation').innerText() };
+    };
+    const waiting = await transition();
+    assert.deepEqual([waiting.text, waiting.title], ['Corrigé par Claude · en attente de la prochaine preview', 'Commit 0a1b2c3']);
+    assert.doesNotMatch(waiting.conversation, /déploiement|local-1/);
+    await shot(page, 'resolution-en-attente');
+
+    // La CI enregistre le build du correctif : commit abrégé, préfixe de celui de la résolution.
+    const since = await redeploy(ctx, 'local-22', KARIM, commit.slice(0, 12));
+    await page.reload();
+    await toolbarReady(page);
+    const live = await transition();
+    const expected = await page.evaluate((iso) => `Corrigé par Claude · en ligne depuis ${new Date(iso).toLocaleTimeString('fr-FR', { timeStyle: 'short' }).replace(':', ' h ')}`, since);
+    facts.resolutionLisible = { waiting, live, since };
+    assert.deepEqual([live.text, live.title], [expected, 'Commit 0a1b2c3']);
+    assert.match(live.text, /en ligne depuis \d{2} h \d{2}$/);
+    assert.doesNotMatch(live.conversation, /déploiement|local-22/);
+    await shot(page, 'resolution-en-ligne');
+    assert.deepEqual(ctx.blocked, []);
   } finally { await ctx.context.close(); }
 });

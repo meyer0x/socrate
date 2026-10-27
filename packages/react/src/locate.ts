@@ -114,7 +114,8 @@ export function currentSelection(): { range: Range; frame: HTMLIFrameElement | n
   return null;
 }
 
-export type Spot = { element: Element; frame: HTMLIFrameElement | null };
+/** `probable` : retrouvée par son texte sur un autre déploiement, affichée comme position probable. */
+export type Spot = { element: Element; frame: HTMLIFrameElement | null; probable?: boolean };
 type Context = NonNullable<Target['context']>;
 
 const sameRole = (el: Element, t: Target) => roleOf(el) === t.role && nearbyText(el) === t.text;
@@ -212,11 +213,29 @@ export function contextOf(el: Element, selector: string): Target['context'] {
 const only = (hits: Element[]) => (hits.length === 1 ? hits[0]! : null);
 
 /**
+ * Seul élément de même balise (celle qui ouvre l'extrait) et même rôle, hors Socrate, dont le texte propre normalisé commence comme le texte enregistré :
+ * ses 40 premiers caractères, 12 au moins, en deçà desquels un libellé (« Modifier », « Enregistrer ») n'identifie rien.
+ * Le texte d'un parent, repli de `nearbyText` pour un élément vide, ne compte pas : une cible sans texte propre n'est pas relocalisée.
+ * `innerText` n'est lu que sur les éléments dont `textContent`, sans casse, contient le plus long mot du préfixe : il en contient tous les mots visibles.
+ */
+function byText(doc: Document, t: Target): Element | null {
+  const tag = /^<([\w-]+)/.exec(t.html)?.[1];
+  const prefix = cleanText(t.text).slice(0, 40);
+  const word = prefix.split(' ').sort((a, b) => b.length - a.length)[0]!.toLowerCase();
+  return tag && prefix.length > 11 ? only([...doc.getElementsByTagName(tag)].filter((el) => {
+    const label = el.getAttribute('aria-label');
+    return roleOf(el) === t.role && !isSocrate(el) && (label ?? el.textContent!.toLowerCase().includes(word)) && cleanText(label ?? (el as HTMLElement).innerText).startsWith(prefix);
+  })) : null;
+}
+
+/**
  * Cible d'une pastille après navigation, remontage ou rechargement, sans élément vivant retenu :
  * même route et même cadre ; identifiant éditorial propre et unique ; sinon, sur le même déploiement seulement :
  * avec un contexte enregistré, un seul candidat de même structure au même chemin sous un ancêtre identique, sans repli ;
  * sans contexte (retour antérieur ou cible non distinguée), la règle historique, puis un seul candidat dont la sérialisation complète
  * égale l'extrait enregistré et que le sélecteur d'origine désigne encore : un jumeau ne reprend pas la pastille d'une cible supprimée.
+ * Sur un autre déploiement, sans identifiant éditorial : un seul élément de même balise et même rôle dont le texte commence comme celui
+ * enregistré (`byText`), rendu `probable` ; le sélecteur positionnel d'un autre build ne désigne plus rien de sûr.
  * Tout autre cas rend null : aucune pastille n'est posée sur un élément arbitraire.
  */
 export function findTarget(t: Target, sameDeployment: boolean): Spot | null {
@@ -240,7 +259,10 @@ export function findTarget(t: Target, sameDeployment: boolean): Spot | null {
     const r = resolveEditorial(doc, own[2] ? { id: own[1]!, instance: own[2] } : { id: own[1]! });
     return r.kind === 'found' ? { element: r.element, frame } : null;
   }
-  if (!sameDeployment) return null;
+  if (!sameDeployment) {
+    const hit = byText(doc, t);
+    return hit && { element: hit, frame, probable: true };
+  }
   const spot = (el: Element | null) => (el ? { element: el, frame } : null);
   const family = () => familyOf(doc, t.selector) ?? [];
   if (t.context) return spot(only(family().filter((el) => inContext(el, t.context!))));
