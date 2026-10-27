@@ -3199,6 +3199,7 @@ test('coût par mutation de l’hôte : 6 000 div et 30 fils d’un ancien dépl
     ctx.setFaults(null);
     facts.coutMutation = { seulMs: seul, trenteFilsMs: trente, socrateMs: Math.round((trente - seul) * 10) / 10 };
     console.log(`coût par mutation : ${JSON.stringify(facts.coutMutation)}`);
-    assert.ok(trente < 16, `moins de 16 ms de travail par mutation de l’hôte avec trente fils non retrouvés (${JSON.stringify(facts.coutMutation)})`);
+    // Part de Socrate : l'écart avec la même page sans ces fils, insensible à la charge de la machine qui gonfle aussi le coût de l'hôte seul.
+    assert.ok(trente - seul < 16, `moins de 16 ms de travail de Socrate par mutation de l’hôte avec trente fils non retrouvés (${JSON.stringify(facts.coutMutation)})`);
   } finally { await ctx.context.close(); }
 });
