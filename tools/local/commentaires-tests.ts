@@ -3042,7 +3042,7 @@ test('position probable refusée : sélection, cible vide dans un parent texté,
   } finally { await ctx.context.close(); }
 });
 
-test('résolution par un agent avec commit : en attente de la prochaine preview, puis en ligne depuis le déploiement qui porte le commit ; commit au survol, aucun identifiant de déploiement', async () => {
+test('résolution par un agent avec commit : en attente sans déploiement postérieur, rien d’affirmé après un build sous un autre commit, en ligne depuis le déploiement qui porte le commit, rien face à un ancien service ; commit au survol, aucun identifiant de déploiement', async () => {
   const ctx = await browser.newContext(origins());
   try {
     const page = await loginAs(ctx, 'Karim Benali, développeur');
@@ -3085,17 +3085,36 @@ test('résolution par un agent avec commit : en attente de la prochaine preview,
     assert.doesNotMatch(waiting.conversation, /déploiement|local-1/);
     await shot(page, 'resolution-en-attente');
 
+    // Un build postérieur sous un autre commit peut contenir le correctif : rien n'est affirmé.
+    await redeploy(ctx, 'local-24', KARIM, 'beadfeed0042');
+    await page.reload();
+    await toolbarReady(page);
+    const unknown = await transition();
+    assert.deepEqual([unknown.text, unknown.title], ['Corrigé par Claude', 'Commit 0a1b2c3'], 'jamais « en attente » après un déploiement postérieur');
+    await shot(page, 'resolution-inconnue');
+
     // La CI enregistre le build du correctif : commit abrégé, préfixe de celui de la résolution.
     const since = await redeploy(ctx, 'local-22', KARIM, commit.slice(0, 12));
+    const listed = page.waitForResponse((r) => r.request().method() === 'GET' && new URL(r.url()).pathname.endsWith('/threads'));
     await page.reload();
     await toolbarReady(page);
     const live = await transition();
     const expected = await page.evaluate((iso) => `Corrigé par Claude · en ligne depuis ${new Date(iso).toLocaleTimeString('fr-FR', { timeStyle: 'short' }).replace(':', ' h ')}`, since);
-    facts.resolutionLisible = { waiting, live, since };
+    facts.resolutionLisible = { waiting, unknown, live, since };
     assert.deepEqual([live.text, live.title], [expected, 'Commit 0a1b2c3']);
     assert.match(live.text, /en ligne depuis \d{2} h \d{2}$/);
     assert.doesNotMatch(live.conversation, /déploiement|local-22/);
     await shot(page, 'resolution-en-ligne');
+
+    // Service antérieur, sans `liveSince` ni `liveState` : « Corrigé par Claude », sans état de mise en ligne.
+    const older = await (await listed).json() as { items: Array<{ messages: Array<{ transition: Record<string, unknown> | null }> }> };
+    for (const m of older.items.flatMap((t) => t.messages)) if (m.transition) { delete m.transition.liveSince; delete m.transition.liveState; }
+    ctx.setFaults((r) => r.method === 'GET' && path(r).endsWith('/threads') ? { kind: 'respond', status: 200, body: older } : { kind: 'pass' });
+    await page.reload();
+    await toolbarReady(page);
+    const ancien = await transition();
+    ctx.setFaults(null);
+    assert.deepEqual([ancien.text, ancien.title], ['Corrigé par Claude', 'Commit 0a1b2c3']);
     assert.deepEqual(ctx.blocked, []);
   } finally { await ctx.context.close(); }
 });

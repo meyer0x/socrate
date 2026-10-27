@@ -37,16 +37,26 @@ const toThread = (r: ThreadRow, target: TargetRow | undefined, proposal: Proposa
   proposal: proposal ? toProposal(proposal, reference) : null,
 });
 /** Déploiements non révoqués de la revue, du plus ancien au plus récent : ce qu'il faut pour dire si un commit de résolution est en ligne. */
-type LiveRow = { commit_sha: string; created_at: string };
-const LIVE_SQL = 'SELECT commit_sha, created_at FROM deployments WHERE project_id = ? AND review_key = ? AND revoked_at IS NULL ORDER BY created_at, deployment_id';
+type LiveRow = { deployment_id: string; commit_sha: string; created_at: string };
+const LIVE_SQL = 'SELECT deployment_id, commit_sha, created_at FROM deployments WHERE project_id = ? AND review_key = ? AND revoked_at IS NULL ORDER BY created_at, deployment_id';
 const liveDeployments = async (env: Env, projectId: string, reviewKey: string) => (await env.DB.prepare(LIVE_SQL).bind(projectId, reviewKey).all<LiveRow>()).results;
-/** Premier déploiement qui porte le commit : abrégé ou complet de part et d'autre, comparé par préfixe dans les deux sens. Aucune ascendance Git n'est connue du service. */
-const liveSince = (live: LiveRow[], commit: string | null) => (commit ? live.find((d) => d.commit_sha.startsWith(commit) || commit.startsWith(d.commit_sha))?.created_at ?? null : null);
+/**
+ * Mise en ligne d'une résolution avec commit. `liveSince` : premier déploiement qui porte le commit, abrégé ou complet de part et d'autre, comparé par préfixe dans les deux sens.
+ * Sinon `pending` tant qu'aucun déploiement n'a été créé depuis la résolution (celui relevé à l'écriture exclu), `unknown` ensuite : un build postérieur peut contenir
+ * le correctif sous un autre commit, et le service ne connaît aucune ascendance Git. Rien sans commit.
+ */
+function liveOf(live: LiveRow[], r: MessageRow): Pick<Transition, 'liveSince' | 'liveState'> {
+  const commit = r.commit_sha;
+  if (!commit) return { liveSince: null, liveState: null };
+  const since = live.find((d) => d.commit_sha.startsWith(commit) || commit.startsWith(d.commit_sha))?.created_at ?? null;
+  if (since) return { liveSince: since, liveState: 'live' };
+  return { liveSince: null, liveState: live.some((d) => d.deployment_id !== r.deployment_id && d.created_at >= r.created_at) ? 'unknown' : 'pending' };
+}
 
 const toMessage = (r: MessageRow, attachments: Attachment[] = [], live: LiveRow[] = []): Message => ({
   messageId: r.message_id, threadId: r.thread_id, seq: r.seq, author: { key: r.author_key, displayName: r.author_name },
   exploring: r.exploring ? JSON.parse(r.exploring) : null, body: r.body, attachments, via: r.via,
-  transition: r.transition ? { state: r.transition, commit: r.commit_sha, deploymentId: r.deployment_id, liveSince: liveSince(live, r.commit_sha) } : null, createdAt: r.created_at,
+  transition: r.transition ? { state: r.transition, commit: r.commit_sha, deploymentId: r.deployment_id, ...liveOf(live, r) } : null, createdAt: r.created_at,
 });
 const byMessage = (rows: AttachmentRow[]) => {
   const m = new Map<string, Attachment[]>();

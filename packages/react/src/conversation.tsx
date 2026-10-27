@@ -210,14 +210,15 @@ const shortWhen = (iso: string) => {
   return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString('fr-FR', { timeStyle: 'short' }).replace(':', ' h ') : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
 };
 /**
- * Changement d'état écrit avec son message, sans identifiant de déploiement : « Corrigé par Claude · en ligne depuis 11 h 24 » quand un agent donne un commit,
- * sinon « Résolu par » l'agent ou la personne, ou « Rouvert ». Sans `liveSince` (service antérieur), aucun état de mise en ligne. Le commit court reste au survol.
+ * Changement d'état écrit avec son message, sans identifiant de déploiement : « Corrigé par Claude · en ligne depuis 11 h 24 » quand un agent donne un commit déployé,
+ * « · en attente de la prochaine preview » seulement si aucun déploiement n'a suivi la résolution, rien d'autre sinon ou face à un service antérieur ;
+ * sans commit, « Résolu par » l'agent ou la personne ; ou « Rouvert ». Le commit court reste au survol.
  */
 export function Transition({ m }: { m: Message }) {
-  const { state, commit, liveSince: live } = m.transition!;
+  const { state, commit, liveSince: live, liveState } = m.transition!;
   return (
-    <span data-testid="socrate-transition" title={commit ? `Commit ${commit.slice(0, 7)}` : undefined}>
-      {state === 'open' ? 'Rouvert' : m.via && commit ? `Corrigé par ${m.via}${live === undefined ? '' : live ? ` · en ligne depuis ${shortWhen(live)}` : ' · en attente de la prochaine preview'}` : `Résolu par ${m.via ?? m.author.displayName}`}
+    <span data-testid="socrate-transition" data-live={(commit && liveState) || undefined} title={commit ? `Commit ${commit.slice(0, 7)}` : undefined}>
+      {state === 'open' ? 'Rouvert' : m.via && commit ? `Corrigé par ${m.via}${live ? ` · en ligne depuis ${shortWhen(live)}` : liveState === 'pending' ? ' · en attente de la prochaine preview' : ''}` : `Résolu par ${m.via ?? m.author.displayName}`}
     </span>
   );
 }

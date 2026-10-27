@@ -176,10 +176,12 @@ export type Attachment = AttachmentMeta & { attachmentId: string };
 export type AttachmentReservation = { items: Array<{ attachmentId: string; uploaded: boolean }>; expiresAt: string };
 /**
  * Changement d'état porté par un message : `commit` et `deploymentId` (dernier déploiement non révoqué au moment de l'écriture) pour une résolution.
- * `liveSince`, calculé à la lecture : date du premier déploiement non révoqué de la revue qui porte ce commit (préfixe dans un sens ou l'autre), `null` si aucun ou sans commit,
- * absent d'un service antérieur.
+ * Calculés à la lecture pour une résolution avec commit, absents d'un service antérieur, `null` sinon :
+ * `liveSince`, date du premier déploiement non révoqué de la revue qui porte ce commit (préfixe dans un sens ou l'autre) ;
+ * `liveState`, `live` si ce déploiement existe, `pending` si aucun déploiement non révoqué n'a été créé depuis la résolution, `unknown` sinon
+ * (un build postérieur peut contenir le correctif sous un autre commit).
  */
-export type Transition = { state: 'resolved' | 'open'; commit: string | null; deploymentId: string | null; liveSince?: string | null };
+export type Transition = { state: 'resolved' | 'open'; commit: string | null; deploymentId: string | null; liveSince?: string | null; liveState?: 'live' | 'pending' | 'unknown' | null };
 /**
  * `body` vide seulement pour un message fait de pièces. `attachments` vide pour un message sans pièce, dont tous ceux d’avant les pièces jointes.
  * `via` nomme l'agent qui a écrit au nom de l'auteur, `null` pour un message écrit dans le navigateur.

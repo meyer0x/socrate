@@ -14,7 +14,7 @@ Most hosts do not put `data-socrate-id` on their elements, so a target is record
 - **Bounded cost.** Over 300 elements with the same tag and role, the search gives up. Otherwise the own text is read only on candidates whose `textContent` without whitespace contains the reference without whitespace. The candidate lists and these flattened texts are shared by all threads during one pass and forgotten at the next microtask. On a page of 6,000 `div` with 30 unresolved threads of an older deployment, the work per host mutation went from 89 ms to 11 ms (Chromium headless, Apple silicon).
 - **Shown as probable.** Such a pin is dashed and labelled "Position probable"; the list keeps "Voir sur la page" with "position probable".
 - **"Voir où c’était".** When nothing qualifies, the list offers the thread's capture, cropped and framed on the recorded rectangle, loaded on demand. The target records an optional `container` (`{ label? }`) when it sits in a `dialog`, `[role=dialog]`, `[role=alertdialog]` or `[aria-modal=true]`; the view then asks to open that window and retry.
-- **Readable resolution.** Reads compute `transition.liveSince`: the first non-revoked deployment of the review whose commit matches the resolution commit by prefix in either direction. The panel shows "Corrigé par <agent> · en ligne depuis <time>" or "· en attente de la prochaine preview", the commit on hover, never the deployment id. `deploymentId` stays in the API.
+- **Readable resolution.** Reads compute `transition.liveSince`: the first non-revoked deployment of the review whose commit matches the resolution commit by prefix in either direction, and `transition.liveState`: `live`, `pending` while no non-revoked deployment was created after the resolution, `unknown` once one was. The panel shows "Corrigé par <agent> · en ligne depuis <time>", "· en attente de la prochaine preview" only when `pending`, and nothing more otherwise: a later build may carry the fix under another commit. The commit is on hover, never the deployment id. `deploymentId` stays in the API.
 
 ## Why a unique candidate stays safe
 
@@ -24,9 +24,9 @@ This relaxes "never the first match" only in the direction it was meant to prote
 
 - **Positional selector across deployments.** A new build shifts `nth-of-type` positions; the pin would land on a neighbour without any sign of doubt.
 - **Fuzzy text similarity.** A score threshold picks a winner among several candidates, which is exactly the first-match behaviour this project refuses.
-- **Git ancestry for "en ligne".** The service has no repository access. Comparing commits by prefix is exact for the build that carries the fix; a later build that contains it under another commit is reported as waiting (documented limit).
+- **Git ancestry for "en ligne".** The service has no repository access. Comparing commits by prefix is exact for the build that carries the fix; a later build that may contain it under another commit is reported without any live state, never as waiting.
 
 ## Consequences
 
-- `targetSchema` gains the optional `container`; `Transition` gains `liveSince`, computed without migration. A 0.2.0 client ignores both. A 0.3.0 client facing an older Worker sees `422` on `target.container` alone and resends the same target without it; without `liveSince` it shows "Corrigé par <agent>" with no live state.
+- `targetSchema` gains the optional `container`; `Transition` gains `liveSince` and `liveState`, computed without migration. A 0.2.0 client ignores them. A 0.3.0 client facing an older Worker sees `422` on `target.container` alone and resends the same target without it; without `liveSince` and `liveState` it shows "Corrigé par <agent>" with no live state.
 - The panel chunk grows by about 600 bytes gzip (the ceiling `panneauGzip` is raised accordingly); the capture view is a separate chunk.
