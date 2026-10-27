@@ -381,10 +381,11 @@ export default function ReviewFrame({ preview, getIdentityAssertion, navigation,
     if (!t.target) return null;
     const a = anchors.current.get(t.threadId);
     const el = a?.element.deref();
-    const kept = a && el && sameContext(el, a, t.target) ? { element: el, frame: a.frame, probable: a.probable } : null;
+    // Une position probable n'est pas gardée : elle est redemandée, et l'arrivée d'un jumeau la retire.
+    const kept = a && el && !a.probable && sameContext(el, a, t.target) ? { element: el, frame: a.frame } : null;
     if (kept) return kept;
     // Une ancre sortie de son contexte est remplacée par la cible de la règle de rechargement, revérifiée de même aux mutations suivantes.
-    const found = findTarget(t.target, t.deploymentId === preview.deploymentId);
+    const found = findTarget(t.target, t.deploymentId === preview.deploymentId, !!t.proposal);
     if (found) anchors.current.set(t.threadId, { element: new WeakRef(found.element), frame: found.frame, role: roleOf(found.element), text: nearbyText(found.element), probable: found.probable });
     else anchors.current.delete(t.threadId);
     return found;

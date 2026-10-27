@@ -2983,6 +2983,65 @@ test('nouveau déploiement sans identifiant éditorial : un seul candidat de mê
   } finally { await ctx.context.close(); }
 });
 
+test('position probable refusée : sélection, cible vide dans un parent texté, fin de texte éditée, jumeau arrivé ensuite, candidat masqué ou jumeau masqué', async () => {
+  const ctx = await browser.newContext(origins());
+  try {
+    const page = await loginAs(ctx, 'Claire Morel, relectrice produit', '/activite');
+    await toolbarReady(page);
+    const at = await selectText(page, '[data-testid="note-suivi"]', 'Fictive Durand avant vendredi');
+    await page.mouse.click(at.x, at.y, { button: 'right' });
+    await page.locator('[data-socrate="menu"]').getByRole('menuitem', { name: 'Proposer une correction' }).click();
+    await bubble(page).getByRole('textbox', { name: 'Correction proposée' }).fill('Fictive Durand avant jeudi midi');
+    await bubble(page).getByRole('button', { name: 'Envoyer' }).click();
+    await page.locator('#socrate-bubble').waitFor({ state: 'hidden', timeout: 15_000 });
+    const selection = (await threadOf('Fictive Durand avant jeudi midi'))!.thread_id;
+    const add = (html: string) => page.evaluate((h) => { const t = document.createElement('template'); t.innerHTML = h; document.querySelector('section')!.append(t.content); }, html);
+    const PUCE = '<span data-testid="puce" style="display:inline-block;width:12px;height:12px;background:#c33"></span>';
+    await add(`<p>Statut du dossier fictif en attente ${PUCE}</p><p data-testid="historique">Karim Benali a modifié le statut du bien Maison Nantes</p><p data-testid="relance-martin">Relance fictive du dossier Martin prévue lundi</p><p data-testid="dossier-clos">Dossier fictif clos sans suite le mardi</p>`);
+    const ids = {
+      vide: await comment(page, page.getByTestId('puce'), 'Refus probable : puce vide dans un paragraphe texté.'),
+      fin: await comment(page, page.getByTestId('historique'), 'Refus probable : fin de texte éditée.'),
+      jumeau: await comment(page, page.getByTestId('relance-martin'), 'Refus probable : jumeau arrivé ensuite.'),
+      masque: await comment(page, page.getByTestId('dossier-clos'), 'Refus probable : candidat masqué.'),
+      selection,
+    };
+    assert.match((await targetOf(ids.vide)).text, /^Statut du dossier fictif en attente/, 'cible vide : le texte enregistré est celui du parent');
+    assert.equal((await targetOf(ids.selection)).text, 'Fictive Durand avant vendredi');
+    // Ancre sans contexte d'ancêtre : seule la revérification de l'unicité peut retirer sa pastille.
+    await db().prepare("UPDATE targets SET context = json_remove(context, '$.context') WHERE thread_id = ?").bind(ids.jumeau).run();
+
+    await redeploy(ctx, 'local-23', CLAIRE);
+    await page.reload();
+    await page.getByRole('heading', { level: 1, name: 'Activité' }).waitFor();
+    await toolbarReady(page);
+    // Nouveau build : un paragraphe qui commence par la sélection, un texte égal à celui du parent de la puce, la fin de l'historique éditée, le dossier clos masqué.
+    await add(`<p data-testid="commence-par-selection">Fictive Durand avant vendredi, puis le rappeler.</p><p>Statut du dossier fictif en attente ${PUCE}</p><span data-testid="texte-du-parent">Statut du dossier fictif en attente</span><p data-testid="historique">Karim Benali a modifié le statut du bien Loft Bordeaux</p><p data-testid="relance-martin">Relance fictive du dossier Martin prévue lundi</p><p data-testid="dossier-clos" hidden>Dossier fictif clos sans suite le mardi</p>`);
+    const pinOf = (id: string) => page.locator(`[data-socrate="pin"][data-threads~="${id}"]`);
+    const seen = await pinsSettle(page, {
+      jumeau: { id: ids.jumeau, on: page.getByTestId('relance-martin'), expected: true },
+      selection: { id: ids.selection, on: page.getByTestId('commence-par-selection'), expected: false },
+      selectionNote: { id: ids.selection, on: page.getByTestId('note-suivi'), expected: false },
+      vide: { id: ids.vide, on: page.getByTestId('texte-du-parent'), expected: false },
+      fin: { id: ids.fin, on: page.getByTestId('historique'), expected: false },
+    });
+    assert.deepEqual(seen, { jumeau: true, selection: false, selectionNote: false, vide: false, fin: false });
+    for (const k of ['selection', 'vide', 'fin', 'masque'] as const) assert.equal(await pinOf(ids[k]).count(), 0, `aucune pastille (${k})`);
+    assert.equal(await pinOf(ids.jumeau).getAttribute('data-probable'), 'true');
+
+    await add('<p>Relance fictive du dossier Martin prévue lundi</p>');
+    await pinOf(ids.jumeau).waitFor({ state: 'detached', timeout: 5_000 });
+    await add('<p data-testid="dossier-clos-visible">Dossier fictif clos sans suite le mardi</p>');
+    await page.waitForTimeout(500);
+    assert.equal(await pinOf(ids.masque).count(), 0, 'un jumeau masqué rend le candidat visible ambigu');
+    await page.getByTestId('dossier-clos').evaluate((el) => el.remove());
+    assert.deepEqual(await pinsSettle(page, { masque: { id: ids.masque, on: page.getByTestId('dossier-clos-visible'), expected: true } }), { masque: true }, 'seul et rendu : position probable');
+    await control(page, 'launcher').click();
+    for (const k of ['selection', 'vide', 'fin', 'jumeau'] as const) await row(page, ids[k]).getByRole('button', { name: 'Voir où c’était' }).waitFor();
+    facts.refusProbable = { seen };
+    assert.deepEqual(ctx.blocked, []);
+  } finally { await ctx.context.close(); }
+});
+
 test('résolution par un agent avec commit : en attente de la prochaine preview, puis en ligne depuis le déploiement qui porte le commit ; commit au survol, aucun identifiant de déploiement', async () => {
   const ctx = await browser.newContext(origins());
   try {
@@ -3038,5 +3097,55 @@ test('résolution par un agent avec commit : en attente de la prochaine preview,
     assert.doesNotMatch(live.conversation, /déploiement|local-22/);
     await shot(page, 'resolution-en-ligne');
     assert.deepEqual(ctx.blocked, []);
+  } finally { await ctx.context.close(); }
+});
+
+test('coût par mutation de l’hôte : 6 000 div et 30 fils d’un ancien déploiement non retrouvés', async () => {
+  const ctx = await browser.newContext(origins());
+  try {
+    const page = await loginAs(ctx, 'Claire Morel, relectrice produit', '/activite');
+    await toolbarReady(page);
+    const id = await comment(page, page.getByTestId('note-suivi'), 'Sonde : fil modèle des trente fils.');
+    const listed = page.waitForResponse((r) => r.request().method() === 'GET' && new URL(r.url()).pathname.endsWith('/threads'));
+    await page.reload();
+    const real = await (await listed).json() as { items: Array<{ threadId: string; target: Record<string, unknown> | null }> };
+    const model = real.items.find((t) => t.threadId === id)!;
+    // Trente fils d'un autre déploiement, cibles `div` sans contexte dont le texte n'est nulle part : chacun relance la relocalisation à chaque mutation.
+    const probes = Array.from({ length: 30 }, (_, i) => ({
+      ...model, threadId: `sonde-${i}`, deploymentId: 'ancien-deploiement',
+      target: { ...model.target, role: 'div', selector: `body > section > div:nth-of-type(${i + 1})`, text: `Relance introuvable numéro ${i} du journal`, html: `<div>Relance introuvable numéro ${i} du journal</div>`, context: undefined },
+    }));
+    const measure = async (items: unknown[]) => {
+      ctx.setFaults((r) => r.method === 'GET' && path(r).endsWith('/threads') ? { kind: 'respond', status: 200, body: { items } } : { kind: 'pass' });
+      await page.reload();
+      await page.getByRole('heading', { level: 1, name: 'Activité' }).waitFor();
+      await toolbarReady(page);
+      await page.locator(`[data-socrate="pin"][data-threads~="${id}"]`).waitFor();
+      await page.evaluate(() => {
+        const box = document.createElement('section');
+        for (let i = 0; i < 6000; i++) box.append(Object.assign(document.createElement('div'), { textContent: `Ligne ${i} du journal fictif des rappels` }));
+        document.body.append(box);
+      });
+      const settle = () => page.evaluate(() => new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(ok, 0)))));
+      await settle();
+      const cdp = await ctx.context.newCDPSession(page);
+      await cdp.send('Performance.enable');
+      const busy = async () => (await cdp.send('Performance.getMetrics')).metrics.find((m) => m.name === 'TaskDuration')!.value * 1000;
+      const runs = 20;
+      const start = await busy();
+      for (let i = 0; i < runs; i++) {
+        await page.evaluate((n) => { document.querySelector('body > section > div')!.textContent = `Ligne modifiée ${n}`; }, i);
+        await settle();
+      }
+      const perMutation = (await busy() - start) / runs;
+      await cdp.detach();
+      return Math.round(perMutation * 10) / 10;
+    };
+    const seul = await measure(real.items);
+    const trente = await measure([...real.items, ...probes]);
+    ctx.setFaults(null);
+    facts.coutMutation = { seulMs: seul, trenteFilsMs: trente, socrateMs: Math.round((trente - seul) * 10) / 10 };
+    console.log(`coût par mutation : ${JSON.stringify(facts.coutMutation)}`);
+    assert.ok(trente < 16, `moins de 16 ms de travail par mutation de l’hôte avec trente fils non retrouvés (${JSON.stringify(facts.coutMutation)})`);
   } finally { await ctx.context.close(); }
 });
