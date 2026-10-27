@@ -97,7 +97,7 @@ test('parcours complet : démarrage, détails, approbation, échange, puis lectu
 
   const res = await resolve(agent, threadId, { message: 'Corrigé.', commit: 'abc1234' });
   assert.equal(res.status, 201, JSON.stringify(res.json));
-  assert.deepEqual([res.json.body, res.json.via, res.json.transition], ['Corrigé.', 'Claude', { state: 'resolved', commit: 'abc1234', deploymentId: 'local-1' }]);
+  assert.deepEqual([res.json.body, res.json.via, res.json.transition], ['Corrigé.', 'Claude', { state: 'resolved', commit: 'abc1234', deploymentId: 'local-1', liveSince: null }]);
   const read = await call(agent, 'GET', `${threadsPath}/${threadId}`);
   assert.equal(read.json.state, 'resolved');
   assert.deepEqual(read.json.messages.map((m: any) => [m.via, m.transition?.state ?? null]), [[null, null], ['Claude', null], ['Claude', 'resolved']]);
@@ -108,7 +108,7 @@ test('parcours complet : démarrage, détails, approbation, échange, puis lectu
 
   const back = await reopen(agent, threadId, { message: 'Rouvert : régression vue en recette.' });
   assert.equal(back.status, 201, JSON.stringify(back.json));
-  assert.deepEqual(back.json.transition, { state: 'open', commit: null, deploymentId: null });
+  assert.deepEqual(back.json.transition, { state: 'open', commit: null, deploymentId: null, liveSince: null });
 });
 
 test('la résolution enregistre le dernier déploiement non révoqué au moment de l’écriture', async () => {
@@ -120,7 +120,39 @@ test('la résolution enregistre le dernier déploiement non révoqué au moment 
   const threadId = await thread(karim, 'Contraste insuffisant.');
   const r = await resolve(agentClient(token), threadId, { message: 'Contraste relevé.' });
   assert.equal(r.status, 201, JSON.stringify(r.json));
-  assert.deepEqual(r.json.transition, { state: 'resolved', commit: null, deploymentId: 'local-2' });
+  assert.deepEqual(r.json.transition, { state: 'resolved', commit: null, deploymentId: 'local-2', liveSince: null });
+});
+
+test('en ligne depuis : premier déploiement non révoqué qui porte le commit, préfixe dans les deux sens, calculé à chaque lecture', async () => {
+  const { token } = await login(karim);
+  const agent = agentClient(token);
+  const createdAt = async (id: string) => (await db().prepare('SELECT created_at FROM deployments WHERE deployment_id = ?').bind(id).first<string>('created_at'))!;
+  const liveOf = async (c: Client, threadId: string) => {
+    const one = (await call(c, 'GET', `${threadsPath}/${threadId}`)).json.messages.at(-1).transition.liveSince;
+    const listed = (await call(claire, 'GET', threadsPath)).json.items.find((t: any) => t.threadId === threadId).messages.at(-1).transition.liveSince;
+    assert.equal(listed, one, 'même valeur pour la liste du panneau et la lecture du fil');
+    return one;
+  };
+
+  const court = await thread(karim, 'Marge du bouton trop faible.');
+  const r = await resolve(agent, court, { message: 'Marge corrigée.', commit: 'feedc0ffee12' });
+  assert.equal(r.json.transition.liveSince, null, 'commit pas encore déployé : en attente');
+  assert.equal(await liveOf(agent, court), null);
+  assert.equal((await importDemo(bench, 'local-4', { commit: 'feedc0f', buildId: '0045' })).status, 201);
+  assert.equal(await liveOf(agent, court), await createdAt('local-4'), 'commit du déploiement plus court que celui de la résolution');
+  assert.equal(r.json.transition.deploymentId, 'local-2', 'le déploiement relevé à l’écriture ne change pas');
+
+  const long = await thread(karim, 'Titre tronqué.');
+  assert.equal((await resolve(agent, long, { message: 'Titre complet.', commit: 'beefcafe' })).status, 201);
+  assert.equal((await importDemo(bench, 'local-5', { commit: 'beefcafe0123456789', buildId: '0046' })).status, 201);
+  assert.equal((await call({ url: bench.service.url, token: bench.importToken }, 'POST', `${base}/deployments/local-5/revoke`)).status, 200);
+  assert.equal(await liveOf(agent, long), null, 'un déploiement révoqué ne compte pas');
+  assert.equal((await importDemo(bench, 'local-6', { commit: 'beefcafe0123456789', buildId: '0047' })).status, 201);
+  assert.equal((await importDemo(bench, 'local-7', { commit: 'beefcafe0123456789', buildId: '0048' })).status, 201);
+  assert.equal(await liveOf(agent, long), await createdAt('local-6'), 'commit de la résolution plus court : le premier déploiement non révoqué qui le porte');
+
+  const sans = await thread(karim, 'Icône floue.');
+  assert.equal((await resolve(agent, sans, { message: 'Icône remplacée.' })).json.transition.liveSince, null, 'sans commit : rien à mettre en ligne');
 });
 
 test('refus du panneau : exploration, code expiré, déjà décidé, autre projet, sans participation', async () => {

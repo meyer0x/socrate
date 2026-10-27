@@ -94,6 +94,8 @@ export const targetSchema = z.strictObject({
     html: z.string().min(1).max(1000).refine(isSanitizedHtml, 'contexte HTML non nettoyé'),
     path: z.array(z.number().int().nonnegative().max(1000)).min(1).max(3),
   }).optional(),
+  /** Fenêtre ou panneau modal qui contenait la cible (`dialog`, rôle `dialog` ou `alertdialog`, `aria-modal`), avec son libellé lisible s'il en a un ; absent hors d'une fenêtre et des charges antérieures. */
+  container: z.strictObject({ label: z.string().max(80).regex(/^[^\p{C}]*$/u).optional() }).optional(),
 });
 export type Target = z.infer<typeof targetSchema>;
 
@@ -172,8 +174,12 @@ export type Proposal = { original: string; replacement: string; sourceRevisionId
 export type Attachment = AttachmentMeta & { attachmentId: string };
 /** Réservation des pièces d'une opération, dans l'ordre déclaré ; `uploaded` vaut aussi pour une pièce déjà rattachée par cette opération. */
 export type AttachmentReservation = { items: Array<{ attachmentId: string; uploaded: boolean }>; expiresAt: string };
-/** Changement d'état porté par un message : `commit` et `deploymentId` (dernier déploiement non révoqué au moment de l'écriture) pour une résolution. */
-export type Transition = { state: 'resolved' | 'open'; commit: string | null; deploymentId: string | null };
+/**
+ * Changement d'état porté par un message : `commit` et `deploymentId` (dernier déploiement non révoqué au moment de l'écriture) pour une résolution.
+ * `liveSince`, calculé à la lecture : date du premier déploiement non révoqué de la revue qui porte ce commit (préfixe dans un sens ou l'autre), `null` si aucun ou sans commit,
+ * absent d'un service antérieur.
+ */
+export type Transition = { state: 'resolved' | 'open'; commit: string | null; deploymentId: string | null; liveSince?: string | null };
 /**
  * `body` vide seulement pour un message fait de pièces. `attachments` vide pour un message sans pièce, dont tous ceux d’avant les pièces jointes.
  * `via` nomme l'agent qui a écrit au nom de l'auteur, `null` pour un message écrit dans le navigateur.
