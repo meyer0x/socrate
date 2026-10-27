@@ -2832,18 +2832,26 @@ test('voir où c’était (échelle 2, page défilée) : capture recadrée et en
     const intro = page.getByTestId('scene-intro');
     await intro.waitFor();
 
-    // Service antérieur au champ `container` : son refus 422 sur ce seul champ, puis la même charge sans lui.
+    // Service qui refuse le relevé de fenêtre (champ inconnu ou libellé) : son refus 422 sous `target.container`, puis la même charge sans lui.
     let refused = false;
     ctx.setFaults((r) => {
       if (refused || r.method !== 'POST' || !path(r).endsWith('/targeted')) return { kind: 'pass' };
       refused = true;
-      return { kind: 'respond', status: 422, body: { code: 'invalid_request', message: 'retour ciblé invalide', requestId: 'banc', retryable: false, issues: [{ path: 'target.container', message: 'donnée inconnue refusée' }] } };
+      return { kind: 'respond', status: 422, body: { code: 'invalid_request', message: 'retour ciblé invalide', requestId: 'banc', retryable: false, issues: [{ path: 'target.container.label', message: 'libellé refusé' }] } };
     });
     const ancien = await comment(page, intro, 'Ancien service : la fenêtre n’est pas enregistrée.');
     ctx.setFaults(null);
     const posts = toService(ctx, (r) => r.method === 'POST' && path(r).endsWith('/targeted')).map((r) => 'container' in JSON.parse(r.postData!).target);
     assert.deepEqual(posts, [true, false], 'refus du seul champ nouveau, puis même charge sans lui');
     assert.ok(!('container' in await targetOf(ancien)), 'ancien retour sans fenêtre');
+
+    // Libellé long coupé au milieu d'un émoji : tronqué par points de code, accepté par le service du premier coup.
+    const MODAL = 'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]';
+    await intro.evaluate((el, m) => el.closest(m)!.setAttribute('aria-label', `${'x'.repeat(78)}😀 et la suite du libellé`), MODAL);
+    const emoji = await comment(page, intro, 'Libellé de fenêtre coupé sur un émoji.');
+    await intro.evaluate((el, m) => el.closest(m)!.removeAttribute('aria-label'), MODAL);
+    assert.deepEqual((await targetOf(emoji)).container, { label: `${'x'.repeat(78)}…` }, 'aucune moitié d’émoji, 80 unités UTF-16 au plus');
+    assert.deepEqual(toService(ctx, (r) => r.method === 'POST' && path(r).endsWith('/targeted')).slice(2).map((r) => 'container' in JSON.parse(r.postData!).target), [true], 'un seul envoi, sans repli');
 
     const box = (await intro.boundingBox())!;
     const body = 'L’introduction du modèle court est trop vague.';
@@ -2855,6 +2863,26 @@ test('voir où c’était (échelle 2, page défilée) : capture recadrée et en
     for (const k of ['x', 'y', 'width', 'height'] as const) assert.ok(Math.abs(target.rect[k] - box[k]) < 1, `rectangle en pixels CSS de la fenêtre (${k})`);
     await page.getByTestId('scene-dialog').getByRole('button', { name: 'Fermer' }).click();
     await page.getByTestId('scene-dialog').waitFor({ state: 'hidden' });
+
+    // Même déploiement, fenêtre fermée : l'élément n'est pas affiché, la page n'a pas changé.
+    await control(page, 'launcher').click();
+    await row(page, id).getByRole('button', { name: 'Voir où c’était' }).click();
+    const same = list(page).getByTestId('socrate-where');
+    assert.equal(await same.getByTestId('socrate-where-why').innerText(), 'L’élément n’est pas affiché sur cet écran pour le moment (fenêtre fermée, onglet, données différentes). Voici où il était quand le retour a été écrit.');
+    // Réessayer garde le focus pendant la recherche : désactivé pour l'accessibilité, jamais retiré de l'ordre de tabulation.
+    const retry = same.getByRole('button', { name: 'Réessayer' });
+    await retry.focus();
+    await page.keyboard.press('Enter');
+    const during = await retry.evaluate((b) => ({ disabled: (b as HTMLButtonElement).disabled, aria: b.getAttribute('aria-disabled'), focused: b.ownerDocument.activeElement === b }));
+    await same.getByTestId('socrate-where-missed').waitFor();
+    assert.deepEqual(during, { disabled: false, aria: 'true', focused: true }, 'Réessayer en cours : aria-disabled, focus conservé');
+    assert.equal(await retry.getAttribute('aria-disabled'), 'false');
+    await shot(page, 'voir-ou-cetait-meme-deploiement');
+    await list(page).getByRole('button', { name: 'Retour aux conversations' }).click();
+    await row(page, id).getByRole('button', { name: 'Voir où c’était' }).waitFor();
+    assert.equal(await list(page).locator(':focus').getAttribute('data-testid'), 'socrate-missing', 'retour : focus sur « Voir où c’était » de la ligne');
+    assert.equal(await list(page).locator(':focus').evaluate((b) => b.closest('[data-testid="socrate-row"]')!.getAttribute('data-thread')), id);
+    await control(page, 'launcher').click();
 
     await redeploy(ctx, 'local-20', CLAIRE);
     await page.reload();
@@ -2872,7 +2900,7 @@ test('voir où c’était (échelle 2, page défilée) : capture recadrée et en
 
     await row(page, id).getByRole('button', { name: 'Voir où c’était' }).click();
     const where = list(page).getByTestId('socrate-where');
-    await where.getByText('Cette version de la page a changé : l’élément n’est pas retrouvé avec certitude. Voici où il était quand le retour a été écrit.').waitFor();
+    assert.equal(await where.getByTestId('socrate-where-why').innerText(), 'Cette version de la page a changé : l’élément n’est pas retrouvé avec certitude. Voici où il était quand le retour a été écrit.');
     assert.equal(await where.getByTestId('socrate-where-container').innerText(), 'C’était dans la fenêtre « Modèle de rappel court ». Ouvrez-la, puis cliquez sur Réessayer.');
     const canvas = where.getByTestId('socrate-where-image');
     await canvas.waitFor();
@@ -2977,6 +3005,12 @@ test('nouveau déploiement sans identifiant éditorial : un seul candidat de mê
       assert.equal(await row(page, t).getByRole('button', { name: 'Voir sur la page' }).count(), 0);
     }
     await shot(page, 'position-probable-liste');
+    // Ligne ouverte : la mention reste sous la ligne, sans la chevaucher.
+    await row(page, ids.unique).locator('.socrate-row').click();
+    await row(page, ids.unique).getByTestId('socrate-conversation').waitFor();
+    const [line, located] = [(await row(page, ids.unique).locator('.socrate-row-line').boundingBox())!, (await row(page, ids.unique).getByTestId('socrate-located').boundingBox())!];
+    assert.ok(located.y >= line.y + line.height - 0.5, `aucun chevauchement sous la ligne ouverte (${JSON.stringify({ line, located })})`);
+    await shot(page, 'position-probable-ligne-ouverte');
     await row(page, ids.unique).getByRole('button', { name: 'Voir sur la page' }).click();
     await bubble(page).locator(`[data-testid="socrate-conversation"][data-thread="${ids.unique}"]`).waitFor();
     assert.deepEqual(ctx.blocked, []);

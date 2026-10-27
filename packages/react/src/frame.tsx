@@ -828,6 +828,19 @@ export default function ReviewFrame({ preview, getIdentityAssertion, navigation,
   const listRef = useRef<HTMLIFrameElement>(null);
   const listDoc = useFrameDoc(listRef, 'Revue Socrate');
   const where = threads.find((t) => t.threadId === aside && t.target);
+  // Retour de « Voir où c’était » : le focus revient au bouton de la ligne d'origine, ou au titre de la liste si elle ne l'affiche plus.
+  const whereFrom = useRef<string | null>(null);
+  const backFromWhere = () => {
+    whereFrom.current = aside;
+    setAside(null);
+  };
+  useEffect(() => {
+    const id = whereFrom.current;
+    if (aside !== null || id === null) return;
+    whereFrom.current = null;
+    const row = listDoc?.ownerDocument.querySelector<HTMLElement>(`[data-testid="socrate-row"][data-thread="${CSS.escape(id)}"] [data-testid="socrate-missing"]`);
+    (row ?? headingRef.current)?.focus();
+  }, [aside]);
   const openCount = threads.filter((t) => t.state === 'open').length;
   const sharing = captureStatus.kind !== 'inactive';
   const captureNote = captureStatus.kind === 'inactive' && captureStatus.reason ? describeCapture(captureStatus) : captureStatus.kind === 'requesting' ? describeCapture(captureStatus) : null;
@@ -921,7 +934,7 @@ export default function ReviewFrame({ preview, getIdentityAssertion, navigation,
           {!editorial && <Tip doc={listDoc.ownerDocument} />}
           {aside === 'agents' || where
             ? <Suspense fallback={<p className="socrate-meta">Chargement…</p>}>{where
-              ? <WhereView key={aside} thread={where} client={client} onBack={() => setAside(null)} onClose={closeList} onRetry={() => goTo(aside!, true)} headingRef={headingRef} />
+              ? <WhereView key={aside} thread={where} client={client} sameDeployment={where.deploymentId === preview.deploymentId} onBack={backFromWhere} onClose={closeList} onRetry={() => goTo(aside!, true)} headingRef={headingRef} />
               : <AgentsView client={client} onBack={() => setAside(null)} onClose={closeList} headingRef={headingRef} />}</Suspense>
             : editorial
             ? <Suspense fallback={<p className="socrate-meta">Chargement…</p>}><Panel client={client} capture={capture} navigation={navigation} visible={listOpen} onClose={closeList} revision={revision} threads={threads} status={status} refresh={refresh} /></Suspense>

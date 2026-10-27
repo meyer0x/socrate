@@ -292,6 +292,8 @@ function Deferred({ label, load }: { label: string; load: () => Promise<ReactNod
 function TargetView({ epoch, thread, client, navigation }: { epoch: number; thread: ThreadWithMessages; client: ReviewClient; navigation: NavigationAdapter }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // « Voir où c’était » suit un échec de « Localiser la cible » dans le même cycle d'ouverture.
+  const [missedAt, setMissedAt] = useState<number | null>(null);
   useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
   const t = thread.target!;
   const c = thread.capture!;
@@ -307,8 +309,8 @@ function TargetView({ epoch, thread, client, navigation }: { epoch: number; thre
       {url ? <img src={url} alt={`Image prise au ciblage (${c.width} × ${c.height})`} data-testid="socrate-target-image" />
         : <button type="button" className="socrate-button link" onClick={() => client.captureBlob(c.captureId).then((b) => setUrl(URL.createObjectURL(b)), (e: Error) => setError(e.message))}>Afficher l’image</button>}
       {error && <p className="socrate-status" data-kind="error" role="alert">{error}</p>}
-      <Deferred key={epoch} label="Localiser la cible" load={() => { const c = cycle; return guide().then((g) => g.locateTarget(c, t, navigation)); }} />
-      <Deferred label="Voir où c’était" load={() => import('./where.tsx').then((w) => <w.WhereView thread={thread} client={client} />)} />
+      <Deferred key={epoch} label="Localiser la cible" load={() => { const c = cycle; return guide().then((g) => g.locateTarget(c, t, navigation, (found) => setMissedAt(found ? null : epoch))); }} />
+      {missedAt === epoch && <Deferred key={`where-${epoch}`} label="Voir où c’était" load={() => import('./where.tsx').then((w) => <w.WhereView thread={thread} client={client} sameDeployment={thread.deploymentId === client.preview.deploymentId} />)} />}
     </div>
   );
 }

@@ -471,7 +471,7 @@ export function ConversationList({ review, title, status, route, located, expand
                     aria-expanded={menu?.threadId === t.threadId} onClick={(e) => (menu?.threadId === t.threadId ? closeMenu(true) : openMenu(t, e.currentTarget))}>{ICON.more}</button>
                 </div>
                 {!t.target ? null : !onScreen ? page && <button type="button" className="socrate-button link socrate-goto" onClick={() => onGoto(t.threadId)}>Aller à la page</button>
-                  : located.has(t.threadId) ? <p className="socrate-goto socrate-meta"><button type="button" className="socrate-button link" onClick={() => onGoto(t.threadId)}>Voir sur la page</button>{located.get(t.threadId) && ' · position probable'}</p>
+                  : located.has(t.threadId) ? <span className="socrate-goto socrate-meta" data-testid="socrate-located"><button type="button" className="socrate-button link" onClick={() => onGoto(t.threadId)}>Voir sur la page</button>{located.get(t.threadId) && ' · position probable'}</span>
                   : <button type="button" className="socrate-button link socrate-goto" data-testid="socrate-missing" onClick={() => onWhere(t.threadId)}>Voir où c’était</button>}
                 {!open && <RowState thread={t} review={review} />}
                 {open && <div className="socrate-inline"><Conversation thread={t} review={review} /></div>}
